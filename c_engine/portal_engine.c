@@ -172,6 +172,10 @@ static void stream_format(void *data, uint32_t id, const struct spa_pod *param) 
 }
 /* Called with the frame mutex held. Invalid transient chunks are discarded;
  * allocation capacity is not evidence that valid pixels have been supplied. */
+#ifndef SPA_CHUNK_FLAG_EMPTY
+/* PipeWire < 0.3.65 (Ubuntu 22.04 ships 0.3.48) lacks the EMPTY flag. */
+#define SPA_CHUNK_FLAG_EMPTY 0
+#endif
 static void copy_video_buffer(struct uu_portal *p, struct spa_buffer *spa) {
     if (!p->error && p->frame && spa->n_datas >= 1) {
         struct spa_data *d = &spa->datas[0];
