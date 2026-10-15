@@ -780,6 +780,21 @@ impl WebRtcSession {
                                             }
 
                                         },
+                                        // Unknown CONTROL JSON: log the action kind and key
+                                        // names only (never string values — they may carry text).
+                                        Ok(crate::control_protocol::ControlMessage::Unsupported(v)) => {
+                                            static UNSUPPORTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                                            if UNSUPPORTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 8 {
+                                                let action = v.get("action").and_then(serde_json::Value::as_str).unwrap_or("");
+                                                let shape: Vec<String> = v.as_object().map(|o| o.iter().map(|(k, val)| match val {
+                                                    serde_json::Value::String(s) => format!("{k}:str{}", s.len()),
+                                                    serde_json::Value::Number(_) => format!("{k}:num"),
+                                                    serde_json::Value::Bool(_) => format!("{k}:bool"),
+                                                    _ => format!("{k}:obj"),
+                                                }).collect()).unwrap_or_default();
+                                                log::info!("CONTROL unsupported JSON: action={:?} keys={:?}", action, shape);
+                                            }
+                                        }
                                         _ => {}
                                     }
                                 } else if channel_name.contains("STREAMER") {
