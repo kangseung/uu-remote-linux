@@ -161,7 +161,10 @@ impl Drop for ScreenCapture {
 /// Keep the display visible only while a peer is streaming; never unlock it.
 pub fn keep_display_awake() -> Result<(), String> {
     if crate::desktop_backend::detect()? == crate::desktop_backend::DesktopBackend::Kms { return Ok(()); }
-    if crate::desktop_backend::detect()? == crate::desktop_backend::DesktopBackend::Portal { return Ok(()); }
+    if crate::desktop_backend::detect()? == crate::desktop_backend::DesktopBackend::Portal {
+        wake_session_screensaver();
+        return Ok(());
+    }
     if crate::desktop_backend::detect()? == crate::desktop_backend::DesktopBackend::Wayland {
         return crate::wayland::wake();
     }
@@ -169,3 +172,20 @@ pub fn keep_display_awake() -> Result<(), String> {
     if unsafe { x11_wake_display() } != 0 { return Err("X11 display wake failed".into()); }
     Ok(())
 }
+
+/// KDE/GNOME: SimulateUserActivity resets the session idle timer and turns DPMS
+/// outputs back on, without injecting input — the portal equivalent of
+/// x11_wake_display's fake 0,0 motion. Best-effort: never fails the encoder.
+#[cfg(target_os = "linux")]
+fn wake_session_screensaver() {
+    static NOTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let ok = std::process::Command::new("busctl")
+        .args(["--user", "call", "--timeout=2", "org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver", "SimulateUserActivity"])
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().is_ok_and(|status| status.success());
+    if !ok && NOTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 2 {
+        log::info!("Session display wake unavailable: org.freedesktop.ScreenSaver did not answer");
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn wake_session_screensaver() {}

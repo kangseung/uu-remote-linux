@@ -24,14 +24,14 @@ mod native {
         fn uu_portal_button(portal: *mut c_void, button: i32, pressed: i32) -> i32;
         fn uu_portal_key(portal: *mut c_void, keysym: u32, pressed: i32) -> i32;
     }
-    struct Handle(NonNull<c_void>);
+    struct Handle { ptr: NonNull<c_void>, opened_at: std::time::Instant, first_frame: std::sync::atomic::AtomicBool }
     // The engine owns callback threads; public calls are serialized by Mutex.
     unsafe impl Send for Handle {}
-    impl Drop for Handle { fn drop(&mut self) { unsafe { uu_portal_close(self.0.as_ptr()) } } }
+    impl Drop for Handle { fn drop(&mut self) { unsafe { uu_portal_close(self.ptr.as_ptr()) } } }
     pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, lock_seen: std::sync::atomic::AtomicU8, retry_at: Mutex<Option<std::time::Instant>>, screencast: bool, pub width: u32, pub height: u32 }
     impl Session {
         pub fn is_alive(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
+            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.ptr.as_ptr()) != 0 })
         }
         /// KDE keeps streaming the lock screen on the PipeWire stream (GNOME closes the
         /// session instead). UU_STREAM_LOCK_SCREEN=1 opts into showing it; the default
@@ -45,7 +45,7 @@ mod native {
         pub fn stream_geometry(&self) -> (Option<(i32, i32)>, (i32, i32)) {
             let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
             let has = self.handle.lock().map(|handle| unsafe {
-                uu_portal_stream_geometry(handle.0.as_ptr(), &mut x, &mut y, &mut width, &mut height)
+                uu_portal_stream_geometry(handle.ptr.as_ptr(), &mut x, &mut y, &mut width, &mut height)
             }).unwrap_or(0);
             ((has != 0).then_some((x, y)), (width, height))
         }
@@ -79,7 +79,7 @@ mod native {
             // A freshly opened session holds no lock-screen frame: only an observed lock (or a
             // closed stream) must discard the cached frame. Starting "locked" cleared the first
             // valid frame, and a static desktop sends no new one, so the viewer stayed black (#2).
-            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), lock_seen: std::sync::atomic::AtomicU8::new(0), retry_at: Mutex::new(None), screencast, width, height })
+            Ok(Self { handle: Mutex::new(Handle { ptr: handle, opened_at: std::time::Instant::now(), first_frame: std::sync::atomic::AtomicBool::new(false) }), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), lock_seen: std::sync::atomic::AtomicU8::new(0), retry_at: Mutex::new(None), screencast, width, height })
         }
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
             let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
@@ -89,13 +89,13 @@ mod native {
                 if state == Some(true) {
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
                     self.lock_seen.store(1, std::sync::atomic::Ordering::Release);
-                    unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
+                    unsafe { uu_portal_reset_frame(handle.ptr.as_ptr()) };
                 }
                 super::blank(frame); return Ok(());
             }
             if self.was_locked.swap(false, std::sync::atomic::Ordering::AcqRel) {
                 // First unlocked capture after a real lock: drop frames captured while locked.
-                unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
+                unsafe { uu_portal_reset_frame(handle.ptr.as_ptr()) };
                 super::blank(frame); return Ok(());
             }
             // KDE keeps the session and stream "alive" across an unlock but stops
@@ -105,8 +105,12 @@ mod native {
             let seen = match state { Some(true) => 1, Some(false) => 2, None => 0 };
             let previous = self.lock_seen.load(std::sync::atomic::Ordering::Acquire);
             let unlock_edge = previous == 1 && seen == 2;
-            let alive = unsafe { uu_portal_alive(handle.0.as_ptr()) } != 0;
-            if !alive || unlock_edge {
+            let alive = unsafe { uu_portal_alive(handle.ptr.as_ptr()) } != 0;
+            // A healthy stream delivers an initial frame even on a static desktop; one
+            // that stays empty for 10s while unlocked is broken (or the outputs are off).
+            let stalled = seen == 2 && !handle.first_frame.load(std::sync::atomic::Ordering::Acquire)
+                && handle.opened_at.elapsed() > std::time::Duration::from_secs(10);
+            if !alive || unlock_edge || stalled {
                 // GNOME can close the stream before the periodic lock watcher updates.
                 if !alive && crate::session_lock::locked_now() != Some(false) {
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
@@ -131,29 +135,33 @@ mod native {
                     return Err("Portal dimensions changed; reconnect required".into());
                 }
                 *handle = replacement.handle.into_inner().map_err(|_| "Portal session lock poisoned")?;
-                log::info!("Portal capture session rebuilt: reason={}", if unlock_edge { "unlock" } else { "closed" });
+                let reason = if unlock_edge { "unlock" } else if stalled { "stalled" } else { "closed" };
+                log::info!("Portal capture session rebuilt: reason={reason}");
             }
             self.lock_seen.store(seen, std::sync::atomic::Ordering::Release);
-            let code = unsafe { uu_portal_capture(handle.0.as_ptr(), frame.as_mut_ptr(), frame.len()) };
+            let code = unsafe { uu_portal_capture(handle.ptr.as_ptr(), frame.as_mut_ptr(), frame.len()) };
+            if code == 0 && !handle.first_frame.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                log::info!("Portal stream delivering frames: after_ms={}", handle.opened_at.elapsed().as_millis());
+            }
             if code == 10 || code == 9 { super::blank(frame); Ok(()) } else { super::check(code) }
         }
 
         pub fn clipboard_supported(&self) -> bool {
-            !self.screencast && self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_supported(handle.0.as_ptr()) != 0 })
+            !self.screencast && self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_supported(handle.ptr.as_ptr()) != 0 })
         }
         pub fn clipboard_ready(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_ready(handle.0.as_ptr()) != 0 })
+            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_ready(handle.ptr.as_ptr()) != 0 })
         }
         pub fn clipboard_set(&self, text: &str) -> Result<(), String> {
             if text.len()>crate::clipboard::MAX_TEXT || *self.locked.borrow()!=Some(false) { return Err("Portal clipboard unavailable".into()); }
             let handle=self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
-            if unsafe { uu_portal_clipboard_set(handle.0.as_ptr(),text.as_ptr(),text.len()) }==0 {Ok(())} else {Err("Portal clipboard ownership failed".into())}
+            if unsafe { uu_portal_clipboard_set(handle.ptr.as_ptr(),text.as_ptr(),text.len()) }==0 {Ok(())} else {Err("Portal clipboard ownership failed".into())}
         }
         pub fn clipboard_poll(&self) -> Option<String> {
             if *self.locked.borrow()!=Some(false) { return None; }
             let handle=self.handle.lock().ok()?;
             let mut bytes=vec![0;crate::clipboard::MAX_TEXT];
-            let length=unsafe { uu_portal_clipboard_poll(handle.0.as_ptr(),bytes.as_mut_ptr(),bytes.len()) };
+            let length=unsafe { uu_portal_clipboard_poll(handle.ptr.as_ptr(),bytes.as_mut_ptr(),bytes.len()) };
             if length<0 { return None; }
             bytes.truncate(length as usize); String::from_utf8(bytes).ok()
         }
@@ -161,20 +169,20 @@ mod native {
             if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
-            super::check(unsafe { uu_portal_move(handle.0.as_ptr(), x, y, i32::from(relative)) })
+            super::check(unsafe { uu_portal_move(handle.ptr.as_ptr(), x, y, i32::from(relative)) })
         }
         pub fn button(&self, button: i32, pressed: bool) -> Result<(), String> {
             if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
-            super::check(unsafe { uu_portal_button(handle.0.as_ptr(), button, i32::from(pressed)) })
+            super::check(unsafe { uu_portal_button(handle.ptr.as_ptr(), button, i32::from(pressed)) })
         }
         pub fn key(&self, symbol: u64, pressed: bool) -> Result<(), String> {
             if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let symbol = u32::try_from(symbol).map_err(|_| "Invalid Portal keysym")?;
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
-            super::check(unsafe { uu_portal_key(handle.0.as_ptr(), symbol, i32::from(pressed)) })
+            super::check(unsafe { uu_portal_key(handle.ptr.as_ptr(), symbol, i32::from(pressed)) })
         }
     }
 }

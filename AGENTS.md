@@ -116,7 +116,7 @@ viewer does not reconnect them automatically.
 | `UU_FFMPEG_ROOT` | FFmpeg prefix (`bin/ffmpeg`, libs in `lib/x86_64-linux-gnu`) |
 | `UU_AUDIO=0`, `UU_AUDIO_SOURCE` | disable sound / choose the Pulse source (default `@DEFAULT_MONITOR@`) |
 | `UU_LOGIN_WINDOW=0` | don't auto-open the login window |
-| `UU_STREAM_LOCK_SCREEN=1` | keep streaming the lock screen instead of blanking (KDE keeps the PipeWire stream alive on lock; input via uinput still reaches the lock screen). Default off = privacy. Either way the portal session is rebuilt on the lock→unlock edge: KDE's stream stays "alive" but silently stops delivering real frames after unlock |
+| `UU_STREAM_LOCK_SCREEN=1` | keep streaming the lock screen instead of blanking (KDE keeps the PipeWire stream alive on lock; input via uinput still reaches the lock screen). Default off = privacy. Either way the portal session is rebuilt on the lock→unlock edge (KDE's stream stays "alive" but can silently stop delivering real frames after unlock) and when a stream delivers no frame for 10 s while unlocked. On the portal backend `keep_display_awake` calls `org.freedesktop.ScreenSaver.SimulateUserActivity` (connection start, every 30 s while streaming, on unlock) so DPMS-off outputs wake up |
 
 Token has no expiry field; API code 1120 (HTTP 422) means invalid/expired → re-login. The config is re-read
 every 60 s.
