@@ -34,6 +34,7 @@
 | QR login | GTK login window (or a terminal QR code with `login --no-gui`); expired codes refresh automatically; the service opens the login window by itself when credentials are missing or expired |
 | Remote desktop | H.264 video, NVENC hardware encoding on NVIDIA GPUs, libx264 otherwise; the viewer draws its local pointer, so there is no double cursor |
 | Mouse / keyboard | Absolute and relative motion, clicks, wheel, keys; no spurious key repeat on high-latency links; optional uinput virtual devices on Wayland (layout independent, see below) |
+| Phone IME typing | Text typed with the phone's native IME is injected on the host: ASCII is sent as keystrokes; non-ASCII (e.g. Chinese) is pasted via the clipboard (the clipboard content is temporarily replaced and restored; needs a Wayland session with wl-clipboard). Paste is sent as Ctrl+V, which may not paste in terminal windows (those usually want Ctrl+Shift+V) |
 | Terminal shortcuts | Mac viewers send both Cmd and Ctrl as Ctrl. In a focused terminal window Ctrl+V / Cmd+V become Ctrl+Shift+V (paste); Ctrl+C always interrupts, copy with Cmd+Shift+C (X11) |
 | Pointer shape | Remote cursor shape is mirrored to the viewer (X11) |
 | Clipboard | Two-way text sync |
@@ -184,6 +185,7 @@ pure ScreenCast portal session for capture and no longer asks for portal input/c
 RemoteDesktop consent dialog offers no screen picker (it always grants the whole multi-monitor desktop), while the
 ScreenCast dialog lets you pick one screen. The clipboard is then bridged via wl-clipboard (install wl-clipboard and
 keep `WAYLAND_DISPLAY` in the service environment); restore tokens are cached separately for the two session kinds.
+With several monitors, pointer coordinates are remapped onto the captured screen automatically (xdg-output layout).
 Without uinput access the original RemoteDesktop session is used and nothing changes.
 
 ## Servers without a monitor
@@ -227,6 +229,7 @@ Common environment variables:
 | `UU_FFMPEG_ROOT` | Use FFmpeg from this prefix |
 | `UU_AUDIO=0` | Disable sound; `UU_AUDIO_SOURCE` picks the PulseAudio source |
 | `UU_LOGIN_WINDOW=0` | Do not open the login window automatically when credentials are missing |
+| `UU_STREAM_LOCK_SCREEN=1` | Keep streaming while the screen is locked (KDE still delivers the lock screen, so you can type the password remotely); the default blanks the video while locked for privacy |
 | `UU_PORT_MAPPING=0` | Disable port mapping (the official host's controlled-side switch) |
 
 Host settings such as "lock after remote session" and "mute host" are stored in

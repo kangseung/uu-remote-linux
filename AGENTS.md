@@ -116,6 +116,7 @@ viewer does not reconnect them automatically.
 | `UU_FFMPEG_ROOT` | FFmpeg prefix (`bin/ffmpeg`, libs in `lib/x86_64-linux-gnu`) |
 | `UU_AUDIO=0`, `UU_AUDIO_SOURCE` | disable sound / choose the Pulse source (default `@DEFAULT_MONITOR@`) |
 | `UU_LOGIN_WINDOW=0` | don't auto-open the login window |
+| `UU_STREAM_LOCK_SCREEN=1` | keep streaming the lock screen instead of blanking (KDE keeps the PipeWire stream alive on lock; input via uinput still reaches the lock screen). Default off = privacy |
 
 Token has no expiry field; API code 1120 (HTTP 422) means invalid/expired → re-login. The config is re-read
 every 60 s.
@@ -155,6 +156,11 @@ started a second full host server instead, so check that a subcommand exists in 
   Video is sent only for desktop connections (capture_type ≤ 2).
 - CONTROL messages are protobuf `Message {1 seq, 2 timestamp, <which> payload}`; input arrives as JSON
   (`kbd_press`, `mouse_move_absolute` with normalized 0..1 floats, ...).
+- Android IME typing arrives as JSON `{"action":"text_input","content":"..."}` (one message per IME commit;
+  observed on the official Android viewer). Injection: printable ASCII → per-char VK keystrokes
+  (`input_mapping::ascii_to_windows_vk`, Shift wrapped per char); any non-ASCII → wl-clipboard paste fallback
+  (save `wl-paste` text → `wl-copy` the content → Ctrl+V → ~300 ms → restore), gated on WAYLAND_DISPLAY.
+  Content capped at 4 KiB; never log the text (counts/booleans only).
 - Echo: the viewer sends SimpleAction action 0 with its FeatureFlag; the host answers action 1 with args
   `{"seq":<request seq>}` and **its own** FeatureFlag. The viewer only uses features the host declares:
   `1 ff_capture_setting=4`, `2 ff_simple_action=2`, `3 ff_system_metrics=2`, `6 ff_file_transfer_ftp=2`,
@@ -210,6 +216,11 @@ started a second full host server instead, so check that a subcommand exists in 
 - logind `unlock-session` by the session owner clears the GNOME shield in ~3 s.
 - GNOME closes the portal session on lock; capture/input must share one portal session and be rebuilt after
   unlock. Portal input/clipboard permissions are persisted per desktop (0600 file); a revoked permission asks again.
+- The uinput absolute tablet maps 0..=65535 onto the whole desktop bounding box, so single-screen ScreenCast
+  capture would offset clicks. `c_engine/output_layout.c` enumerates logical outputs via xdg-output; the portal
+  stream `position` (KDE provides it) or a unique logical-size match feeds `input_mapping::AbsoluteMapping`
+  (`capture.rs` → `InputInjector::set_absolute_mapping`, cleared on portal unbind). Identity when geometry is
+  unknown/ambiguous or the whole desktop is captured; logical (not pixel) coordinates everywhere.
 - Portal session kinds: `uu_portal_open_persist` (RemoteDesktop: input + clipboard consent) and
   `uu_portal_open_screencast` (ScreenCast-only: capture consent with per-screen picker on KDE, no SelectDevices,
   no portal clipboard; input/clipboard FFI report unsupported). `src/capture.rs` picks ScreenCast when

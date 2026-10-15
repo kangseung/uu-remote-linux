@@ -16,6 +16,7 @@ mod native {
         fn uu_portal_clipboard_set(portal: *mut c_void, text: *const u8, length: usize) -> i32;
         fn uu_portal_clipboard_poll(portal: *mut c_void, text: *mut u8, capacity: usize) -> i32;
         fn uu_portal_close(portal: *mut c_void);
+        fn uu_portal_stream_geometry(portal: *mut c_void, x: *mut i32, y: *mut i32, width: *mut i32, height: *mut i32) -> i32;
         fn uu_portal_alive(portal: *mut c_void) -> i32;
         fn uu_portal_reset_frame(portal: *mut c_void);
         fn uu_portal_capture(portal: *mut c_void, bgra: *mut u8, length: usize) -> i32;
@@ -31,6 +32,22 @@ mod native {
     impl Session {
         pub fn is_alive(&self) -> bool {
             self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
+        }
+        /// KDE keeps streaming the lock screen on the PipeWire stream (GNOME closes the
+        /// session instead). UU_STREAM_LOCK_SCREEN=1 opts into showing it; the default
+        /// blanks frames while locked so notifications/windows never leak to the viewer.
+        fn stream_lock_screen() -> bool {
+            static ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ONCE.get_or_init(|| std::env::var("UU_STREAM_LOCK_SCREEN").ok().as_deref() == Some("1"))
+        }
+        /// Logical stream geometry in compositor coordinates: (position, size);
+        /// position is None when the portal did not report one.
+        pub fn stream_geometry(&self) -> (Option<(i32, i32)>, (i32, i32)) {
+            let (mut x, mut y, mut width, mut height) = (0, 0, 0, 0);
+            let has = self.handle.lock().map(|handle| unsafe {
+                uu_portal_stream_geometry(handle.0.as_ptr(), &mut x, &mut y, &mut width, &mut height)
+            }).unwrap_or(0);
+            ((has != 0).then_some((x, y)), (width, height))
         }
         pub fn screencast_only(&self) -> bool { self.screencast }
         pub fn open() -> Result<Self, String> { Self::open_kind(false) }
@@ -67,7 +84,7 @@ mod native {
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
             let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
             let state = *self.locked.borrow();
-            if state != Some(false) {
+            if state != Some(false) && !Self::stream_lock_screen() {
                 // Unknown state (watcher not reported yet): show nothing but keep the cached frame.
                 if state == Some(true) {
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
@@ -176,6 +193,7 @@ impl PortalSession {
     pub fn clipboard_set(&self, _: &str) -> Result<(), String> { Err(error(2)) }
     pub fn clipboard_poll(&self) -> Option<String> { None }
     pub fn is_alive(&self) -> bool { false }
+    pub fn stream_geometry(&self) -> (Option<(i32, i32)>, (i32, i32)) { (None, (0, 0)) }
     pub fn screencast_only(&self) -> bool { false }
     pub fn open() -> Result<Self, String> { Err("Portal backend requires Linux and --features portal".into()) }
     pub fn open_screencast() -> Result<Self, String> { Self::open() }
