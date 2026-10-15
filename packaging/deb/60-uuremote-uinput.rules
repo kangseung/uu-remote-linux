@@ -1,0 +1,3 @@
+# Grants the logged-in seat user access to /dev/uinput so uuremote-server can
+# inject input through kernel virtual devices instead of portal permissions.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess"

@@ -62,6 +62,10 @@ cargo build --release --features wayland,portal   # + GNOME/KDE Wayland via xdg-
 
 ## 4. Install on a user's machine (step by step)
 
+On Debian/Ubuntu/LMDE the recommended install is the deb from Releases (or `packaging/deb/build-deb.sh`),
+which ships the binary, the uinput udev rule and a `--global`-enabled user unit; the steps below are the
+from-source equivalent.
+
 1. Check the session: `echo $XDG_SESSION_TYPE $XDG_CURRENT_DESKTOP $DISPLAY $WAYLAND_DISPLAY`.
    X11 → default build. Hyprland → `--features wayland`. GNOME/KDE on Wayland → `--features wayland,portal`
    (or advise the user to pick the "on Xorg" session at the login screen, which is the best-supported path).

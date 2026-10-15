@@ -85,6 +85,19 @@ permission; the permission is remembered once granted.
 
 ## Installation
 
+### Debian package (recommended: Debian / Ubuntu / LMDE)
+
+Download `uuremote-server_*_amd64.deb` from [Releases](../../releases), then:
+
+```sh
+sudo apt install ./uuremote-server_*_amd64.deb
+uuremote-server login   # run once inside the desktop session, scan the QR with the mobile app
+```
+
+The package installs all runtime dependencies, the `/dev/uinput` udev rule and a systemd user unit:
+the service starts automatically at every login and restarts on crashes — nothing else to do.
+Upgrades are just installing the newer deb. Building from source is described below.
+
 ### 1. Dependencies (Ubuntu / Debian)
 
 ```sh

@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # udev is absent in chroots/containers; never fail there.
+        if command -v udevadm >/dev/null 2>&1; then
+            udevadm control --reload || true
+            udevadm trigger --name-match=uinput || true
+        fi
+        # debhelper does not handle user units; --global auto-starts the
+        # service at every user's graphical login.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl --global enable uuremote-server.service || true
+        fi
+        if [ -z "$2" ]; then
+            echo "uuremote-server: run 'uuremote-server login' once inside your desktop session"
+            echo "to scan the QR code; afterwards the service starts automatically at login."
+            echo "首次使用：请在桌面会话中运行一次 uuremote-server login 扫码登录，之后服务随登录自动启动。"
+        fi
+        ;;
+esac
+
+exit 0

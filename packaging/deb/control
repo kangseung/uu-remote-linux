@@ -1,0 +1,14 @@
+Package: uuremote-server
+Version: @VERSION@
+Section: net
+Priority: optional
+Architecture: amd64
+Installed-Size: @SIZE@
+Maintainer: uu-remote-linux contributors <https://github.com/VallierDev/uu-remote-linux>
+Depends: libgtk-3-0t64 | libgtk-3-0, libpipewire-0.3-0t64 | libpipewire-0.3-0, libglib2.0-0t64 | libglib2.0-0, libwayland-client0, libxkbcommon0, libx11-6, libxext6, libxtst6, libxfixes3, libatomic1, ffmpeg, wl-clipboard
+Description: Unofficial Linux host for NetEase UU Remote
+ Control a Linux desktop from the official NetEase UU Remote clients
+ (Mac / Windows / mobile). X11, Hyprland/wlroots and GNOME/KDE portal
+ capture, uinput or portal input, clipboard, audio, file transfer,
+ terminal and port mapping. Not affiliated with NetEase.
+Homepage: https://github.com/VallierDev/uu-remote-linux

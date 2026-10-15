@@ -79,6 +79,18 @@ Wayland 下的限制：只支持单屏、固定分辨率；Hyprland 原生后端
 
 ## 安装
 
+### deb 安装包（推荐，Debian / Ubuntu / LMDE）
+
+从 [Releases](../../releases) 下载 `uuremote-server_*_amd64.deb`，然后：
+
+```sh
+sudo apt install ./uuremote-server_*_amd64.deb
+uuremote-server login   # 在桌面会话里运行一次，用手机 App 扫码登录
+```
+
+软件包会装齐运行依赖、`/dev/uinput` 的 udev 规则和 systemd 用户服务：登录桌面后服务自动启动、
+崩溃自动重启，除此不再需要手动步骤。升级时直接安装新版 deb 即可。从源码编译安装见下文。
+
 ### 1. 依赖（Ubuntu / Debian）
 
 ```sh

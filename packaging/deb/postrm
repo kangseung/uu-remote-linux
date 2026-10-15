@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload || true
+    fi
+fi
+
+# User credentials (~/.config/uuremote) are per-user data and survive removal.
+if [ "$1" = "purge" ]; then
+    echo "uuremote-server: per-user credentials in ~/.config/uuremote were kept; delete them manually if unwanted."
+fi
+
+exit 0

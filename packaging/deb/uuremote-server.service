@@ -1,0 +1,14 @@
+[Unit]
+Description=UU Remote Linux host (unofficial)
+After=graphical-session.target
+
+[Service]
+Environment=RUST_LOG=info
+# No DISPLAY/XAUTHORITY: the Wayland/portal path uses the session bus
+# environment that systemd user services already inherit.
+ExecStart=/usr/bin/uuremote-server
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
