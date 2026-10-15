@@ -13,6 +13,8 @@ struct uu_portal *uu_portal_open_restore(const char *restore, int *error, uint32
  * a picker, while the ScreenCast dialog offers per-screen selection. */
 struct uu_portal *uu_portal_open_screencast(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height);
 const char *uu_portal_restore_token(struct uu_portal *portal);
+/* Logical stream position/size in compositor coordinates; returns 1 when position was present. */
+int uu_portal_stream_geometry(struct uu_portal *portal, int *x, int *y, int *width, int *height);
 void uu_portal_close(struct uu_portal *portal);
 int uu_portal_clipboard_ready(struct uu_portal *portal);
 int uu_portal_clipboard_set(struct uu_portal *portal, const uint8_t *text, size_t length);

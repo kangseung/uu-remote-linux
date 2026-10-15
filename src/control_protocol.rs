@@ -15,7 +15,11 @@ pub enum ControlInput {
     MouseAbsolute { x: f64, y: f64 },
     MouseRelative { dx: i32, dy: i32 },
     MouseScroll { dx: i32, dy: i32 },
+    Text(String),
 }
+
+/// IME commits are single short strings; cap well below the SCTP reader limit.
+const MAX_TEXT_INPUT: usize = 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControlMessage {
@@ -61,6 +65,13 @@ pub fn decode_control(data: &[u8]) -> Result<ControlMessage, String> {
         "mouse_scroll" => ControlInput::MouseScroll {
             dx: integer(&v, "delta_x")?, dy: integer(&v, "delta_y")?,
         },
+        // Android viewer IME commit: {"action":"text_input","content":"..."}.
+        "text_input" => {
+            let content = v.get("content").and_then(Value::as_str)
+                .ok_or("CONTROL field content must be a string")?;
+            if content.len() > MAX_TEXT_INPUT { return Err("CONTROL text_input content too long".into()); }
+            ControlInput::Text(content.to_owned())
+        }
         _ => return Ok(ControlMessage::Unsupported(v)),
     };
     Ok(ControlMessage::Input(event))
@@ -132,6 +143,25 @@ mod tests {
         assert_eq!(simple_action_name(27), Some("need_restart_userapp"));
         assert_eq!(simple_action_name(28), None);
         assert_eq!(simple_action_name(u64::MAX), None);
+    }
+
+    #[test]
+    fn decodes_ime_text_input_ascii_and_cjk() {
+        assert_eq!(decode_control(br#"{"action":"text_input","content":"a"}"#).unwrap(),
+            ControlMessage::Input(ControlInput::Text("a".into())));
+        let cjk = format!(r#"{{"action":"text_input","content":"{}"}}"#, "哈".repeat(4));
+        assert_eq!(decode_control(cjk.as_bytes()).unwrap(),
+            ControlMessage::Input(ControlInput::Text("哈".repeat(4))));
+    }
+
+    #[test]
+    fn rejects_missing_nonstring_or_oversized_text_content() {
+        assert!(decode_control(br#"{"action":"text_input"}"#).is_err());
+        assert!(decode_control(br#"{"action":"text_input","content":3}"#).is_err());
+        let long = format!(r#"{{"action":"text_input","content":"{}"}}"#, "x".repeat(MAX_TEXT_INPUT + 1));
+        assert!(decode_control(long.as_bytes()).is_err());
+        let at_cap = format!(r#"{{"action":"text_input","content":"{}"}}"#, "x".repeat(MAX_TEXT_INPUT));
+        assert!(decode_control(at_cap.as_bytes()).is_ok());
     }
 
     #[test]

@@ -17,6 +17,7 @@ mod file_trans;
 mod input;
 mod uinput;
 mod input_mapping;
+mod output_layout;
 mod port_mapping;
 mod power;
 mod signaling;
@@ -405,7 +406,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         let session_capture=if desktop && (capture.init_error.is_some() || stale_portal) {
                             if stale_portal {
-                                input.release_held();input.bind_portal(None);
+                                input.release_held();input.bind_portal(None);input.set_absolute_mapping(None);
                                 capture=Arc::new(ScreenCapture::unavailable("Portal authorization expired".into()));
                             }
                             match tokio::task::spawn_blocking(ScreenCapture::new).await {
@@ -416,7 +417,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else { capture.clone() };
                         // Independent file/terminal peers must not detach the
                         // current desktop's authorized Portal input session.
-                        if desktop { input.bind_portal(session_capture.portal.clone()); }
+                        if desktop { input.bind_portal(session_capture.portal.clone()); input.set_absolute_mapping(session_capture.absolute_mapping); }
                         match WebRtcSession::new(session_capture, input.clone(), signaling_client.clone(), desktop, transport).await {
                             Ok(sess) => match sess.handle_offer(&soac).await {
                                 Ok(answer_sdp) => {

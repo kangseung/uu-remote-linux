@@ -67,6 +67,28 @@ fn main() {
             }
             println!("cargo:rustc-link-lib=pthread");
         }
+        if std::env::var_os("CARGO_FEATURE_WAYLAND").is_some() || std::env::var_os("CARGO_FEATURE_PORTAL").is_some() {
+            // Logical output layout for mapping uinput absolute coordinates onto a
+            // single captured screen. Used by the portal path; the wayland feature
+            // block below links the same libraries for its own engine.
+            println!("cargo:rerun-if-changed=c_engine/output_layout.c");
+            println!("cargo:rerun-if-changed=c_engine/output_layout.h");
+            let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+            let xml = "c_engine/wayland-protocols/xdg-output-unstable-v1.xml";
+            println!("cargo:rerun-if-changed={xml}");
+            for (mode, suffix) in [("client-header", "client-protocol.h"), ("private-code", "protocol.c")] {
+                let target = out.join(format!("xdg-output-unstable-v1-{suffix}"));
+                let status = std::process::Command::new("wayland-scanner").args([mode, xml]).arg(&target).status()
+                    .expect("Install wayland-scanner to build the Wayland backend");
+                assert!(status.success(), "wayland-scanner failed");
+            }
+            let mut build = cc::Build::new();
+            build.flag_if_supported("-Wno-unused-parameter");
+            build.file(out.join("xdg-output-unstable-v1-protocol.c"));
+            build.file("c_engine/output_layout.c").include(&out);
+            build.compile("uu_output_layout");
+            println!("cargo:rustc-link-lib=wayland-client");
+        }
         if std::env::var_os("CARGO_FEATURE_WAYLAND").is_some() {
             let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
             let mut build = cc::Build::new();

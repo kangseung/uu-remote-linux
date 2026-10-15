@@ -40,7 +40,7 @@ struct HeldInput { buttons: std::collections::BTreeSet<i32>, keys: std::collecti
 #[derive(Default)]
 struct Shortcuts { modifiers: u8, shifted: std::collections::BTreeSet<i32> }
 
-pub struct InputInjector { shortcuts: std::sync::Mutex<Shortcuts>, uinput: Option<crate::uinput::Devices>, screen: std::sync::Mutex<(u32,u32)>, portal_failures: std::sync::atomic::AtomicUsize, portal_outcomes: [std::sync::atomic::AtomicUsize; 3], portal:std::sync::Mutex<Option<std::sync::Arc<crate::portal::PortalSession>>>, backend: crate::desktop_backend::DesktopBackend, pending: std::sync::Mutex<PendingPointer>, held: std::sync::Mutex<HeldInput> }
+pub struct InputInjector { shortcuts: std::sync::Mutex<Shortcuts>, uinput: Option<crate::uinput::Devices>, screen: std::sync::Mutex<(u32,u32)>, portal_failures: std::sync::atomic::AtomicUsize, portal_outcomes: [std::sync::atomic::AtomicUsize; 3], portal:std::sync::Mutex<Option<std::sync::Arc<crate::portal::PortalSession>>>, backend: crate::desktop_backend::DesktopBackend, pending: std::sync::Mutex<PendingPointer>, held: std::sync::Mutex<HeldInput>, text_paste: std::sync::Mutex<()>, absolute_mapping: std::sync::Mutex<Option<crate::input_mapping::AbsoluteMapping>> }
 
 impl InputInjector {
     pub fn new() -> Self {
@@ -51,12 +51,18 @@ impl InputInjector {
                 Err(e) => { log::warn!("uinput unavailable ({}); using the desktop input path. See README for the udev rule.", e.kind()); None }
             }
         } else { None };
-        Self { shortcuts: std::sync::Mutex::new(Shortcuts::default()), uinput, screen: std::sync::Mutex::new((0,0)), portal_failures: std::sync::atomic::AtomicUsize::new(0), portal_outcomes: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)), portal:std::sync::Mutex::new(None), backend:crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11), pending: std::sync::Mutex::new(PendingPointer::default()), held:std::sync::Mutex::new(HeldInput::default()) }
+        Self { shortcuts: std::sync::Mutex::new(Shortcuts::default()), uinput, screen: std::sync::Mutex::new((0,0)), portal_failures: std::sync::atomic::AtomicUsize::new(0), portal_outcomes: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)), portal:std::sync::Mutex::new(None), backend:crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11), pending: std::sync::Mutex::new(PendingPointer::default()), held:std::sync::Mutex::new(HeldInput::default()), text_paste: std::sync::Mutex::new(()), absolute_mapping: std::sync::Mutex::new(None) }
     }
 
     pub fn bind_portal(&self,session:Option<std::sync::Arc<crate::portal::PortalSession>>) {
         log::info!("Desktop portal input binding updated: bound={}", session.is_some());
         *self.portal.lock().unwrap()=session;
+    }
+    /// uinput's absolute tablet spans the whole desktop bounding box; a single-screen
+    /// portal capture needs viewer coordinates remapped into that box. None = identity.
+    pub fn set_absolute_mapping(&self, mapping: Option<crate::input_mapping::AbsoluteMapping>) {
+        log::info!("Desktop absolute pointer mapping updated: active={}", mapping.is_some());
+        *self.absolute_mapping.lock().unwrap() = mapping;
     }
     pub fn mouse_move(&self, x: i32, y: i32) {
         self.inject_move(x,y,false);
@@ -193,6 +199,55 @@ impl InputInjector {
         for key in &held.keys {self.inject_key(*key,false);}
         *held=HeldInput::default();
     }
+
+    /// Android IME `text_input` commit. Printable ASCII goes in as keystrokes through the
+    /// verified VK path; anything else is pasted via the wl-clipboard selection and the
+    /// previous clipboard text is restored. Never log the text itself.
+    pub fn inject_text(self: &std::sync::Arc<Self>, text: &str) {
+        if text.is_empty() { return; }
+        if text.bytes().all(|b| crate::input_mapping::ascii_to_windows_vk(b).is_some()) {
+            for byte in text.bytes() {
+                let Some((vk, shift)) = crate::input_mapping::ascii_to_windows_vk(byte) else { return };
+                if shift { self.windows_key_event(0x10, true); }
+                self.windows_key_event(vk, true);
+                self.windows_key_event(vk, false);
+                if shift { self.windows_key_event(0x10, false); }
+            }
+            return;
+        }
+        let injector = self.clone();
+        let text = text.to_owned();
+        std::thread::spawn(move || injector.paste_text(&text));
+    }
+
+    fn paste_text(&self, text: &str) {
+        // Serialize concurrent IME commits so the save/set/paste/restore order holds.
+        let _serialize = self.text_paste.lock().unwrap();
+        if std::env::var_os("WAYLAND_DISPLAY").is_none() || !crate::clipboard::wayland_tools_ready() {
+            log::info!("CONTROL text input skipped: non-ASCII without a usable wl-clipboard bridge");
+            return;
+        }
+        // Save the current text selection. An existing but unusable (oversized/non-UTF-8)
+        // selection aborts the paste rather than being destroyed by the restore step.
+        let saved = match std::process::Command::new("wl-paste").args(["--no-newline","--type","text"])
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).output() {
+            Ok(out) if out.status.success() => match String::from_utf8(out.stdout).ok().filter(|s| s.len() <= crate::clipboard::MAX_TEXT) {
+                Some(text) => Some(text),
+                None => { log::info!("CONTROL text input skipped: current clipboard text is not restorable"); return; }
+            },
+            _ => None,
+        };
+        if !wl_copy_text(Some(text)) { log::warn!("CONTROL text input clipboard set failed"); return; }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        self.windows_key_event(0x11, true);   // Control_L
+        self.windows_key_event(0x56, true);   // V
+        self.windows_key_event(0x56, false);
+        self.windows_key_event(0x11, false);
+        // Give the focused app time to request the selection before restoring.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let restored = wl_copy_text(saved.as_deref());
+        log::info!("CONTROL text input pasted via clipboard: chars={} restored={}", text.chars().count(), restored);
+    }
     // Per-injector budgets cover missing bindings, locked sessions, stale handles
     // and D-Bus errors. Never include keys, coordinates, text or portal tokens.
     fn portal_result(&self, operation: &str, result: Result<(), String>) -> i32 {
@@ -228,6 +283,10 @@ impl InputInjector {
             if relative { return Self::uinput_result(uinput.move_relative(x,y)); }
             let (w,h)=*self.screen.lock().unwrap();
             if w > 1 && h > 1 {
+                if let Some(mapping)=*self.absolute_mapping.lock().unwrap() {
+                    let (u,v)=mapping.map(x,y,w,h);
+                    return Self::uinput_result(uinput.move_absolute(u,v));
+                }
                 let scale = |v: i32, extent: u32| (i64::from(v) * i64::from(crate::uinput::ABS_MAX) / i64::from(extent - 1)) as i32;
                 return Self::uinput_result(uinput.move_absolute(scale(x,w),scale(y,h)));
             }
@@ -263,6 +322,34 @@ impl InputInjector {
         if self.backend!=crate::desktop_backend::DesktopBackend::X11 { return; }
         unsafe { x11_key_event(keycode, if is_press { 1 } else { 0 }) };
     }
+}
+
+/// Set (or with None, clear) the Wayland text selection via wl-copy, which
+/// daemonizes once it owns the selection; the wait is bounded anyway.
+fn wl_copy_text(text: Option<&str>) -> bool {
+    let mut command = std::process::Command::new("wl-copy");
+    match text {
+        Some(_) => { command.args(["--type","text/plain;charset=utf-8"]); }
+        None => { command.arg("--clear"); }
+    }
+    let mut child = match command.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null()).spawn() {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+    if let Some(text) = text {
+        use std::io::Write;
+        if child.stdin.take().is_none_or(|mut stdin| stdin.write_all(text.as_bytes()).is_err()) { let _ = child.kill(); return false; }
+    }
+    for _ in 0..20 {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => return false,
+        }
+    }
+    let _ = child.kill();
+    false
 }
 
 #[cfg(test)]

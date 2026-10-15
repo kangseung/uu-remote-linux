@@ -128,6 +128,165 @@ mod tests {
     }
 }
 
+/// Printable ASCII (plus newline/tab) → (Windows VK, needs Shift) on a US layout,
+/// for IME text_input injection. OEM VKs follow the same US base-symbol policy as
+/// windows_vk_to_keysym; the result must round-trip through it.
+pub fn ascii_to_windows_vk(c: u8) -> Option<(i32, bool)> {
+    let pair = match c {
+        b'0'..=b'9' => (i32::from(c), false),
+        b'a'..=b'z' => (i32::from(c) - 0x20, false),
+        b'A'..=b'Z' => (i32::from(c), true),
+        b'\n' => (0x0d, false),
+        b'\t' => (0x09, false),
+        b' ' => (0x20, false),
+        b')' => (0x30, true), b'!' => (0x31, true), b'@' => (0x32, true), b'#' => (0x33, true),
+        b'$' => (0x34, true), b'%' => (0x35, true), b'^' => (0x36, true), b'&' => (0x37, true),
+        b'*' => (0x38, true), b'(' => (0x39, true),
+        b';' => (0xba, false), b'=' => (0xbb, false), b',' => (0xbc, false), b'-' => (0xbd, false),
+        b'.' => (0xbe, false), b'/' => (0xbf, false), b'`' => (0xc0, false),
+        b'[' => (0xdb, false), b'\\' => (0xdc, false), b']' => (0xdd, false), b'\'' => (0xde, false),
+        b':' => (0xba, true), b'+' => (0xbb, true), b'<' => (0xbc, true), b'_' => (0xbd, true),
+        b'>' => (0xbe, true), b'?' => (0xbf, true), b'~' => (0xc0, true),
+        b'{' => (0xdb, true), b'|' => (0xdc, true), b'}' => (0xdd, true), b'"' => (0xde, true),
+        _ => return None,
+    };
+    Some(pair)
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+    #[test]
+    fn every_printable_ascii_maps_and_round_trips_to_a_keysym() {
+        for c in 0x20..=0x7e {
+            let (vk, _) = ascii_to_windows_vk(c).unwrap();
+            assert!(windows_vk_to_keysym(vk).is_some(), "char {c:#x} has no keysym");
+        }
+        assert_eq!(ascii_to_windows_vk(b'\n'), Some((0x0d, false)));
+        assert_eq!(ascii_to_windows_vk(b'\t'), Some((0x09, false)));
+        assert_eq!(ascii_to_windows_vk(0x7f), None);
+        assert_eq!(ascii_to_windows_vk(0x80), None);
+    }
+
+    #[test]
+    fn shifted_digit_row_and_letter_case_match_us_layout() {
+        for (c, digit) in b")!@#$%^&*(".iter().zip(b'0'..=b'9') {
+            assert_eq!(ascii_to_windows_vk(*c), Some((i32::from(digit), true)));
+        }
+        assert_eq!(ascii_to_windows_vk(b'a'), Some((0x41, false)));
+        assert_eq!(ascii_to_windows_vk(b'Z'), Some((0x5a, true)));
+        assert_eq!(ascii_to_windows_vk(b' '), Some((0x20, false)));
+        assert_eq!(ascii_to_windows_vk(b'_'), Some((0xbd, true)));
+        assert_eq!(ascii_to_windows_vk(b'/'), Some((0xbf, false)));
+    }
+}
+
+/// Single-screen portal capture inside a multi-monitor desktop: the uinput absolute
+/// pointer maps 0..=65535 onto the whole desktop bounding box, while the viewer
+/// normalizes coordinates to the captured screen. Logical compositor coordinates
+/// throughout (stream pixel size differs under display scaling).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbsoluteMapping {
+    stream_x: i64, stream_y: i64, stream_w: i64, stream_h: i64,
+    desktop_x: i64, desktop_y: i64, desktop_w: i64, desktop_h: i64,
+}
+
+impl AbsoluteMapping {
+    /// Resolve the captured screen's logical rect against the desktop layout.
+    /// Origin comes from the portal stream `position`; without it, the unique
+    /// output matching the stream's logical size wins. Returns None (identity)
+    /// when geometry is unknown, ambiguous, or the whole desktop is captured.
+    pub fn resolve(position: Option<(i32, i32)>, stream_logical: (i32, i32), outputs: &[crate::output_layout::Output]) -> Option<Self> {
+        if stream_logical.0 <= 0 || stream_logical.1 <= 0 || outputs.is_empty() { return None; }
+        let min_x = outputs.iter().map(|o| o.0).min()?;
+        let min_y = outputs.iter().map(|o| o.1).min()?;
+        let max_x = outputs.iter().map(|o| o.0 + o.2).max()?;
+        let max_y = outputs.iter().map(|o| o.1 + o.3).max()?;
+        let desktop = (i64::from(max_x - min_x), i64::from(max_y - min_y));
+        if desktop.0 <= 0 || desktop.1 <= 0 { return None; }
+        let stream = (i64::from(stream_logical.0), i64::from(stream_logical.1));
+        let origin = match position {
+            Some(origin) => origin,
+            None => {
+                let matches: Vec<_> = outputs.iter().filter(|o| (o.2, o.3) == stream_logical).collect();
+                if matches.len() == 1 { (matches[0].0, matches[0].1) }
+                else if stream == desktop { (min_x, min_y) }
+                else { return None; }
+            }
+        };
+        let mapping = Self {
+            stream_x: i64::from(origin.0), stream_y: i64::from(origin.1),
+            stream_w: stream.0, stream_h: stream.1,
+            desktop_x: i64::from(min_x), desktop_y: i64::from(min_y),
+            desktop_w: desktop.0, desktop_h: desktop.1,
+        };
+        // Whole-desktop capture keeps the established direct scaling.
+        (mapping.stream_x != mapping.desktop_x || mapping.stream_y != mapping.desktop_y
+            || mapping.stream_w != mapping.desktop_w || mapping.stream_h != mapping.desktop_h)
+            .then_some(mapping)
+    }
+
+    /// Stream pixel point → uinput absolute coordinates (0..=ABS_MAX over the desktop box).
+    pub fn map(&self, x: i32, y: i32, pixel_w: u32, pixel_h: u32) -> (i32, i32) {
+        let axis = |v: i32, pixels: u32, origin: i64, logical: i64, base: i64, total: i64| -> i32 {
+            let point = origin as f64 + f64::from(v) * logical as f64 / f64::from(pixels.max(1));
+            ((point - base as f64) * f64::from(crate::uinput::ABS_MAX) / total as f64).round()
+                .clamp(0.0, f64::from(crate::uinput::ABS_MAX)) as i32
+        };
+        (axis(x, pixel_w, self.stream_x, self.stream_w, self.desktop_x, self.desktop_w),
+         axis(y, pixel_h, self.stream_y, self.stream_h, self.desktop_y, self.desktop_h))
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::AbsoluteMapping;
+
+    #[test]
+    fn identity_when_whole_desktop_is_captured() {
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        assert_eq!(AbsoluteMapping::resolve(Some((0, 0)), (3840, 1080), &outputs), None);
+        assert_eq!(AbsoluteMapping::resolve(None, (3840, 1080), &outputs), None);
+        assert_eq!(AbsoluteMapping::resolve(None, (1920, 1080), &[]), None);
+        assert_eq!(AbsoluteMapping::resolve(None, (0, 1080), &outputs), None);
+    }
+
+    #[test]
+    fn left_and_right_screens_of_two() {
+        let outputs = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        let left = AbsoluteMapping::resolve(Some((0, 0)), (1920, 1080), &outputs).unwrap();
+        let right = AbsoluteMapping::resolve(Some((1920, 0)), (1920, 1080), &outputs).unwrap();
+        // 65535/3840 per logical pixel: left edge 0 / 32768, center 16384 / 49151.
+        assert_eq!(left.map(960, 540, 1920, 1080), (16384, 32768));
+        assert_eq!(right.map(960, 540, 1920, 1080), (49151, 32768));
+        // The captured screen's left edge maps to its desktop offset, not to zero.
+        assert_eq!(right.map(0, 540, 1920, 1080).0, 32768);
+        assert_eq!(left.map(0, 540, 1920, 1080).0, 0);
+    }
+
+    #[test]
+    fn matches_unique_output_by_logical_size_without_position() {
+        let outputs = [(0, 0, 2048, 1152), (2048, 36, 1920, 1080)];
+        let mapping = AbsoluteMapping::resolve(None, (1920, 1080), &outputs).unwrap();
+        assert_eq!(mapping, AbsoluteMapping::resolve(Some((2048, 36)), (1920, 1080), &outputs).unwrap());
+        // Same-size screens are ambiguous: fail soft to identity.
+        let twin = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        assert_eq!(AbsoluteMapping::resolve(None, (1920, 1080), &twin), None);
+    }
+
+    #[test]
+    fn fractional_scale_uses_logical_coordinates() {
+        // 2560x1440 panel at 1.5x: logical 1707x960, stream pixels stay 2560x1440.
+        let outputs = [(0, 0, 1707, 960), (1707, 0, 1920, 1080)];
+        let mapping = AbsoluteMapping::resolve(Some((0, 0)), (1707, 960), &outputs).unwrap();
+        let (u, v) = mapping.map(1280, 720, 2560, 1440); // center of the stream
+        assert_eq!(u, (853.5_f64 * 65535.0 / 3627.0).round() as i32);
+        assert_eq!(v, (480.0_f64 * 65535.0 / 1080.0).round() as i32);
+        // Stream right edge reaches the screen's logical right edge, not the desktop's.
+        assert_eq!(mapping.map(2560, 720, 2560, 1440).0, (1707.0_f64 * 65535.0 / 3627.0).round() as i32);
+    }
+}
+
 /// Official Mac CONTROL absolute coordinates are normalized to the source screen.
 pub fn normalized_pointer(x: f64, y: f64, width: u32, height: u32) -> Option<(i32, i32)> {
     if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32

@@ -759,10 +759,11 @@ impl WebRtcSession {
                                         Ok(crate::control_protocol::ControlMessage::Input(event)) => {
                                             use crate::control_protocol::ControlInput;
                                             // Separate receipt budgets keep motion floods from hiding clicks.
-                                            static RECEIPTS: [std::sync::atomic::AtomicUsize; 3] = [const { std::sync::atomic::AtomicUsize::new(0) }; 3];
+                                            static RECEIPTS: [std::sync::atomic::AtomicUsize; 4] = [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
                                             let (slot, kind) = match &event {
                                                 ControlInput::MouseButton {..} | ControlInput::MouseClick {..} => (0, "button"),
                                                 ControlInput::Keyboard {..} | ControlInput::KeyboardClick {..} => (1, "keyboard"),
+                                                ControlInput::Text(_) => (3, "text"),
                                                 _ => (2, "motion"),
                                             };
                                             if RECEIPTS[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 16 {
@@ -776,6 +777,11 @@ impl WebRtcSession {
                                                 ControlInput::KeyboardClick {key} => {input_worker.windows_key_event(*key, true);input_worker.windows_key_event(*key, false);},
                                                 ControlInput::MouseButton {button,pressed} => input_worker.wire_mouse_button(*button,*pressed),
                                                 ControlInput::MouseClick {button} => {input_worker.wire_mouse_button(*button,true);input_worker.wire_mouse_button(*button,false);},
+                                                ControlInput::Text(text) => {
+                                                    // Counts and the ASCII flag only; never the text.
+                                                    log::info!("CONTROL text input received: chars={} ascii={}", text.chars().count(), text.is_ascii());
+                                                    input_worker.inject_text(text);
+                                                },
                                                 _ => {}
                                             }
 

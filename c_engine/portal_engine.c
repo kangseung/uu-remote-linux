@@ -46,6 +46,7 @@ struct uu_portal {
     int error;
     uint32_t node, width, height;
     int logical_width, logical_height;
+    int logical_x, logical_y, has_position;
     int absolute_stream_pixels;
     int screencast_only;
     enum spa_video_format format;
@@ -374,6 +375,25 @@ static struct uu_portal *open_session(const char *restore, void (*save_token)(co
         g_variant_get(entry, "(u@a{sv})", &p->node, &properties);
         /* 'size' is compositor logical coordinates, not the pixel frame size. */
         g_variant_lookup(properties, "size", "(ii)", &p->logical_width, &p->logical_height);
+        /* Single-screen ScreenCast streams may carry 'position' (KDE does). */
+        p->has_position = g_variant_lookup(properties, "position", "(ii)", &p->logical_x, &p->logical_y);
+        /* Key names and geometry only; layout is not private. */
+        char keys[128] = "";
+        GVariantIter iter; const char *key; GVariant *value;
+        g_variant_iter_init(&iter, properties);
+        while (g_variant_iter_next(&iter, "{&sv}", &key, &value)) {
+            if (strlen(keys) + strlen(key) + 1 < sizeof(keys)) {
+                if (*keys) strcat(keys, ",");
+                strcat(keys, key);
+            }
+            g_variant_unref(value);
+        }
+        if (p->has_position)
+            fprintf(stderr, "Portal stream properties: keys=[%s] position=(%d,%d) size=%dx%d\n",
+                keys, p->logical_x, p->logical_y, p->logical_width, p->logical_height);
+        else
+            fprintf(stderr, "Portal stream properties: keys=[%s] position=absent size=%dx%d\n",
+                keys, p->logical_width, p->logical_height);
         g_variant_unref(properties); g_variant_unref(entry);
     }
     if (!*error) {
@@ -415,6 +435,13 @@ struct uu_portal *uu_portal_open(int *error, uint32_t *width, uint32_t *height) 
     return uu_portal_open_restore(NULL, error, width, height);
 }
 const char *uu_portal_restore_token(struct uu_portal *p) { return p ? p->restore_token : NULL; }
+/* Stream logical geometry in compositor coordinates; returns 1 when the
+ * portal supplied an explicit position, 0 for size-only. */
+int uu_portal_stream_geometry(struct uu_portal *p, int *x, int *y, int *width, int *height) {
+    if (!p) return 0;
+    *x = p->logical_x; *y = p->logical_y; *width = p->logical_width; *height = p->logical_height;
+    return p->has_position;
+}
 static gboolean quit_dbus_loop(gpointer data) { g_main_loop_quit(data); return G_SOURCE_REMOVE; }
 void uu_portal_close(struct uu_portal *p) {
     if (!p) return;

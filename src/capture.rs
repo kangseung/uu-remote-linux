@@ -46,6 +46,7 @@ pub struct ScreenCapture {
     pub init_error: Option<String>,
     pub portal: Option<std::sync::Arc<crate::portal::PortalSession>>,
     pub display: String,
+    pub absolute_mapping: Option<crate::input_mapping::AbsoluteMapping>,
     kms: Option<crate::kms::Capture>,
     pub width: u32,
     pub height: u32,
@@ -58,7 +59,7 @@ impl ScreenCapture {
         if backend == crate::desktop_backend::DesktopBackend::Kms {
             let kms=crate::kms::Capture::open()?;
             let (width,height)=(kms.width,kms.height);
-            return Ok(Self { backend,init_error:None,portal:None,display:"kms:linear".into(),width,height,
+            return Ok(Self { backend,init_error:None,portal:None,display:"kms:linear".into(),absolute_mapping:None,width,height,
                 buffer:Mutex::new(vec![0;width as usize*height as usize*4]),kms:Some(kms) });
         }
         if backend == crate::desktop_backend::DesktopBackend::Portal {
@@ -70,12 +71,23 @@ impl ScreenCapture {
             log::info!("Portal capture session: screencast_only={} uinput_wanted={}", uinput_accessible, uinput_wanted);
             let session=std::sync::Arc::new(if uinput_accessible { crate::portal::PortalSession::open_screencast()? } else { crate::portal::PortalSession::open()? });
             let (width,height)=(session.width,session.height);
+            // uinput's absolute tablet spans the whole desktop box; a single captured
+            // screen needs its own window into that box. Fail-soft: identity.
+            let absolute_mapping=uinput_accessible.then(|| {
+                let (position,logical)=session.stream_geometry();
+                let outputs=crate::output_layout::outputs();
+                let mapping=crate::input_mapping::AbsoluteMapping::resolve(position,logical,outputs.as_deref().unwrap_or(&[]));
+                log::info!("Desktop absolute pointer mapping: active={} position_known={} outputs={}",
+                    mapping.is_some(),position.is_some(),outputs.as_deref().unwrap_or(&[]).len());
+                mapping
+            }).flatten();
             return Ok(Self { backend,init_error:None,portal:Some(session),kms:None,display:"wayland:portal".into(),width,height,
+                absolute_mapping,
                 buffer:Mutex::new(vec![0;(width as usize)*(height as usize)*4]) });
         }
         if backend == crate::desktop_backend::DesktopBackend::Wayland {
             let (width,height)=crate::wayland::init()?;
-            return Ok(Self { backend, init_error:None, portal:None, kms:None, display:"wayland:native".into(), width,height,
+            return Ok(Self { backend, init_error:None, portal:None, kms:None, display:"wayland:native".into(), absolute_mapping:None, width,height,
                 buffer:Mutex::new(vec![0;(width as usize)*(height as usize)*4]) });
         }
         let ret = unsafe { x11_init(std::ptr::null()) };
@@ -103,6 +115,7 @@ impl ScreenCapture {
             backend,
             init_error:None,
             portal:None,
+            absolute_mapping:None,
             kms:None,
             display,
             width: w as u32,
@@ -114,7 +127,7 @@ impl ScreenCapture {
     /// Metadata for non-desktop tools. Never advertise a usable fake screen.
     pub fn unavailable(error:String)->Self {
         Self { backend:crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11),
-            init_error:Some(error), portal:None, kms:None, display:String::new(), width:0,height:0,buffer:Mutex::new(Vec::new()) }
+            init_error:Some(error), portal:None, kms:None, display:String::new(), absolute_mapping:None, width:0,height:0,buffer:Mutex::new(Vec::new()) }
     }
 
     /// 截取一帧 BGRA 图像
