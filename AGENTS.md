@@ -105,7 +105,7 @@ viewer does not reconnect them automatically.
 | `~/.config/uuremote/config.json` | user_id, device_id, client_id, system_id, machine_guid, token, csrf; optional `sign_key`, `ffmpeg_root`. `$UU_CONFIG` overrides the path |
 | `~/.config/uuremote/host_settings.json` | persisted 安全 settings: auto_lock, keep_mute, mute_permanent |
 | `UU_DESKTOP_BACKEND` | `auto` (default) / `x11` / `wayland` / `portal` / `kms` (experimental feature) / `none` (headless: no display; desktop offers ignored; tool peers get a nominal 1920x1080 screen + Allow permissions, which the port-mapping viewer requires) |
-| `UU_INPUT_BACKEND` | `auto` (uinput on Wayland/portal when `/dev/uinput` is accessible, udev `uaccess` rule in README) / `uinput` / `native`. X11 keeps XTest (held-key autorepeat handling) |
+| `UU_INPUT_BACKEND` | `auto` (uinput on Wayland/portal when `/dev/uinput` is accessible, udev `uaccess` rule in README) / `uinput` / `native`. X11 keeps XTest (held-key autorepeat handling). With the portal backend and accessible uinput, capture opens a ScreenCast-only portal session instead of RemoteDesktop (KDE's RemoteDesktop dialog has no screen picker; ScreenCast does) |
 | `UU_TERMINAL_SHORTCUTS=0` | disable Ctrl+V → Ctrl+Shift+V in focused X11 terminals (Mac Cmd and Ctrl both arrive as VK_LCONTROL) |
 | `contrib/virtual-desktop/` | Xvfb + session (`UU_VIRTUAL_SESSION`, `UU_VIRTUAL_BUS=user|private`) for monitorless hosts; serve it with `DISPLAY=:99` |
 | `UU_VIDEO_ENCODER` | `cpu`: libx264; `vaapi`: explicit Intel/AMD; `nvenc`: force; unset: NVENC→CPU only if `/proc/driver/nvidia/version` or `/dev/nvidia0` exists, else CPU (#10) |
@@ -206,6 +206,11 @@ started a second full host server instead, so check that a subcommand exists in 
 - logind `unlock-session` by the session owner clears the GNOME shield in ~3 s.
 - GNOME closes the portal session on lock; capture/input must share one portal session and be rebuilt after
   unlock. Portal input/clipboard permissions are persisted per desktop (0600 file); a revoked permission asks again.
+- Portal session kinds: `uu_portal_open_persist` (RemoteDesktop: input + clipboard consent) and
+  `uu_portal_open_screencast` (ScreenCast-only: capture consent with per-screen picker on KDE, no SelectDevices,
+  no portal clipboard; input/clipboard FFI report unsupported). `src/capture.rs` picks ScreenCast when
+  `uinput::wanted(backend) && uinput::probe()`; restore tokens use a separate `<desktop>-screen` cache key, and the
+  text clipboard falls back to the wl-clipboard bridge (`clipboard::start_wayland`) for ScreenCast sessions.
 
 ## 9. Debugging checklist
 

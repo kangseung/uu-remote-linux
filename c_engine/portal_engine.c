@@ -47,6 +47,7 @@ struct uu_portal {
     uint32_t node, width, height;
     int logical_width, logical_height;
     int absolute_stream_pixels;
+    int screencast_only;
     enum spa_video_format format;
     uint8_t *frame;
     size_t frame_length;
@@ -268,10 +269,11 @@ static int connect_pipewire(struct uu_portal *p) {
     pthread_mutex_unlock(&p->lock);
     return result;
 }
-struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height) {
+static struct uu_portal *open_session(const char *restore, void (*save_token)(const char *, void *), void *data, int screencast_only, int *error, uint32_t *width, uint32_t *height) {
     *error = 0; *width = *height = 0;
     struct uu_portal *p = calloc(1, sizeof(*p));
     if (!p) { *error = 8; return NULL; }
+    p->screencast_only = screencast_only;
     /* GNOME forwards NotifyPointerMotionAbsolute into Mutter's stream-to-stage
      * transform. It expects stream pixels, unlike the compositor-sized KDE path.
      * Do not apply the compositor scale twice on fractional-scale displays. */
@@ -283,12 +285,12 @@ struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)
     p->context = g_main_context_new(); g_main_context_push_thread_default(p->context);
     p->bus = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
     if (!p->bus) { *error = 1; goto done; }
-    if (!has_interface(p, REMOTE) || !has_interface(p, SCREEN)) { *error = 2; goto done; }
+    if (!has_interface(p, SCREEN) || (!screencast_only && !has_interface(p, REMOTE))) { *error = 2; goto done; }
     GVariantBuilder options; GVariant *results;
     g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
     char token[64]; snprintf(token, sizeof(token), "uu_session_%u_%u", (unsigned)getpid(), atomic_fetch_add(&token_sequence, 1));
     g_variant_builder_add(&options, "{sv}", "session_handle_token", g_variant_new_string(token));
-    results = request(p, REMOTE, "CreateSession", &options, 0, error);
+    results = request(p, screencast_only ? SCREEN : REMOTE, "CreateSession", &options, 0, error);
     if (!results) goto done;
     const char *handle = NULL;
     if (g_variant_lookup(results, "session_handle", "&s", &handle)) p->session = g_strdup(handle);
@@ -296,33 +298,50 @@ struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)
     if (!p->session || !g_variant_is_object_path(p->session)) { *error = 3; goto done; }
     p->closed_subscription = g_dbus_connection_signal_subscribe(p->bus, DEST, SESSION, "Closed", p->session,
         NULL, G_DBUS_SIGNAL_FLAGS_NONE, session_closed, p, NULL);
-    g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
-    g_variant_builder_add(&options, "{sv}", "types", g_variant_new_uint32(3));
-    GVariant *version_reply = g_dbus_connection_call_sync(p->bus, DEST, PATH,
-        "org.freedesktop.DBus.Properties", "Get", g_variant_new("(ss)", REMOTE, "version"),
-        G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
     guint version = 0;
-    if (version_reply) {
-        GVariant *value; g_variant_get(version_reply, "(v)", &value);
-        if (g_variant_is_of_type(value, G_VARIANT_TYPE_UINT32)) version = g_variant_get_uint32(value);
-        g_variant_unref(value); g_variant_unref(version_reply);
-    }
-    if (version >= 2) {
-        g_variant_builder_add(&options, "{sv}", "persist_mode", g_variant_new_uint32(2));
-        if (restore && *restore) g_variant_builder_add(&options, "{sv}", "restore_token", g_variant_new_string(restore));
-    }
+    if (!screencast_only) {
+        g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
+        g_variant_builder_add(&options, "{sv}", "types", g_variant_new_uint32(3));
+        GVariant *version_reply = g_dbus_connection_call_sync(p->bus, DEST, PATH,
+            "org.freedesktop.DBus.Properties", "Get", g_variant_new("(ss)", REMOTE, "version"),
+            G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+        if (version_reply) {
+            GVariant *value; g_variant_get(version_reply, "(v)", &value);
+            if (g_variant_is_of_type(value, G_VARIANT_TYPE_UINT32)) version = g_variant_get_uint32(value);
+            g_variant_unref(value); g_variant_unref(version_reply);
+        }
+        if (version >= 2) {
+            g_variant_builder_add(&options, "{sv}", "persist_mode", g_variant_new_uint32(2));
+            if (restore && *restore) g_variant_builder_add(&options, "{sv}", "restore_token", g_variant_new_string(restore));
+        }
 
-    results = request(p, REMOTE, "SelectDevices", &options, 1, error);
-    if (!results) goto done;
-    g_variant_unref(results);
+        results = request(p, REMOTE, "SelectDevices", &options, 1, error);
+        if (!results) goto done;
+        g_variant_unref(results);
+    }
     g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
     g_variant_builder_add(&options, "{sv}", "types", g_variant_new_uint32(1));
     g_variant_builder_add(&options, "{sv}", "multiple", g_variant_new_boolean(FALSE));
+    if (screencast_only) {
+        /* Persistence lives on SelectSources for the ScreenCast interface (v2+). */
+        GVariant *version_reply = g_dbus_connection_call_sync(p->bus, DEST, PATH,
+            "org.freedesktop.DBus.Properties", "Get", g_variant_new("(ss)", SCREEN, "version"),
+            G_VARIANT_TYPE("(v)"), G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+        if (version_reply) {
+            GVariant *value; g_variant_get(version_reply, "(v)", &value);
+            if (g_variant_is_of_type(value, G_VARIANT_TYPE_UINT32)) version = g_variant_get_uint32(value);
+            g_variant_unref(value); g_variant_unref(version_reply);
+        }
+        if (version >= 2) {
+            g_variant_builder_add(&options, "{sv}", "persist_mode", g_variant_new_uint32(2));
+            if (restore && *restore) g_variant_builder_add(&options, "{sv}", "restore_token", g_variant_new_string(restore));
+        }
+    }
     /* Hidden cursor avoids duplicate pointer; supported since ScreenCast v1. */
     results = request(p, SCREEN, "SelectSources", &options, 1, error);
     if (!results) goto done;
     g_variant_unref(results);
-    if (has_interface(p, CLIPBOARD)) {
+    if (!screencast_only && has_interface(p, CLIPBOARD)) {
         p->clipboard_owner_subscription=g_dbus_connection_signal_subscribe(p->bus,DEST,CLIPBOARD,
             "SelectionOwnerChanged",PATH,NULL,G_DBUS_SIGNAL_FLAGS_NONE,selection_owner,p,NULL);
         p->clipboard_transfer_subscription=g_dbus_connection_signal_subscribe(p->bus,DEST,CLIPBOARD,
@@ -332,16 +351,19 @@ struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)
         if (reply) g_variant_unref(reply);
     }
     g_variant_builder_init(&options, G_VARIANT_TYPE_VARDICT);
-    results = request(p, REMOTE, "Start", &options, 2, error);
+    results = request(p, screencast_only ? SCREEN : REMOTE, "Start", &options, 2, error);
     if (!results) goto done;
-    gboolean clipboard_enabled=FALSE;
-    g_variant_lookup(results,"clipboard_enabled","b",&clipboard_enabled);
-    p->clipboard_enabled=clipboard_enabled;
-    fprintf(stderr,"Portal clipboard permission: granted=%d\n",clipboard_enabled);
+    if (!screencast_only) {
+        gboolean clipboard_enabled=FALSE;
+        g_variant_lookup(results,"clipboard_enabled","b",&clipboard_enabled);
+        p->clipboard_enabled=clipboard_enabled;
+        fprintf(stderr,"Portal clipboard permission: granted=%d\n",clipboard_enabled);
+    }
     guint devices = 0; GVariant *streams = g_variant_lookup_value(results, "streams", G_VARIANT_TYPE("a(ua{sv})"));
     gboolean has_devices=g_variant_lookup(results, "devices", "u", &devices);
-    fprintf(stderr,"Portal authorization result: devices_present=%d device_bits=%u stream_count=%zu\n",has_devices,devices,streams?(size_t)g_variant_n_children(streams):0);
-    if (!has_devices || (devices & 3) != 3 || !streams || g_variant_n_children(streams) != 1) {
+    fprintf(stderr,"Portal authorization result: screencast_only=%d devices_present=%d device_bits=%u stream_count=%zu\n",
+        screencast_only,has_devices,devices,streams?(size_t)g_variant_n_children(streams):0);
+    if ((!screencast_only && (!has_devices || (devices & 3) != 3)) || !streams || g_variant_n_children(streams) != 1) {
         *error = 6;
     } else {
         GVariant *entry = g_variant_get_child_value(streams, 0), *properties;
@@ -375,6 +397,12 @@ struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)
 done:
     g_main_context_pop_thread_default(p->context);
     uu_portal_close(p); return NULL;
+}
+struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height) {
+    return open_session(restore, save_token, data, 0, error, width, height);
+}
+struct uu_portal *uu_portal_open_screencast(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height) {
+    return open_session(restore, save_token, data, 1, error, width, height);
 }
 struct uu_portal *uu_portal_open_restore(const char *restore, int *error, uint32_t *width, uint32_t *height) {
     return uu_portal_open_persist(restore, NULL, NULL, error, width, height);
@@ -452,7 +480,7 @@ static int notify(struct uu_portal *p, const char *method, GVariant *parameters)
     g_variant_unref(reply); return 0;
 }
 int uu_portal_move(struct uu_portal *p, double x, double y, int relative) {
-    if (!p || !isfinite(x) || !isfinite(y)) return 11;
+    if (!p || p->screencast_only || !isfinite(x) || !isfinite(y)) return 11;
     if (p->logical_width <= 0 || p->logical_height <= 0 || !p->width || !p->height) return 11;
     if (relative) return notify(p, "NotifyPointerMotion", g_variant_new("(o@a{sv}dd)", p->session, empty_options(),
         x * p->logical_width / p->width, y * p->logical_height / p->height));
@@ -462,7 +490,7 @@ int uu_portal_move(struct uu_portal *p, double x, double y, int relative) {
         p->absolute_stream_pixels ? y : y * p->logical_height / p->height));
 }
 int uu_portal_button(struct uu_portal *p, int button, int pressed) {
-    if (!p) return 11;
+    if (!p || p->screencast_only) return 11;
     if (button >= 4 && button <= 7) {
         if (!pressed) return 0;
         return notify(p, "NotifyPointerAxisDiscrete", g_variant_new("(o@a{sv}ui)", p->session, empty_options(),
@@ -473,6 +501,6 @@ int uu_portal_button(struct uu_portal *p, int button, int pressed) {
     return notify(p, "NotifyPointerButton", g_variant_new("(o@a{sv}iu)", p->session, empty_options(), code, (guint)!!pressed));
 }
 int uu_portal_key(struct uu_portal *p, uint32_t symbol, int pressed) {
-    if (!p || !symbol || symbol > INT32_MAX) return 11;
+    if (!p || p->screencast_only || !symbol || symbol > INT32_MAX) return 11;
     return notify(p, "NotifyKeyboardKeysym", g_variant_new("(o@a{sv}iu)", p->session, empty_options(), (gint)symbol, (guint)!!pressed));
 }

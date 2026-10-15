@@ -65,7 +65,15 @@ pub fn start(display: String) -> ClipboardBridge {
     ClipboardBridge { incoming, outgoing, ready }
 }
 
-fn start_wayland() -> ClipboardBridge {
+/// wl-clipboard availability for the ScreenCast-only portal path (no portal clipboard there).
+pub fn wayland_tools_ready() -> bool {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() { return false; }
+    ["wl-copy","wl-paste"].iter().all(|program| std::process::Command::new(program)
+        .arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().is_ok_and(|status| status.success()))
+}
+
+pub fn start_wayland() -> ClipboardBridge {
     use tokio::io::{AsyncReadExt,AsyncWriteExt};
     use std::process::Stdio;
     let (incoming,mut input)=watch::channel::<Option<String>>(None);

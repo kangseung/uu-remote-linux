@@ -166,6 +166,13 @@ sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
 `uaccess` grants access only to the user sitting at the machine. `UU_INPUT_BACKEND=uinput|native` forces a backend.
 X11 keeps XTest by default because it handles held keys correctly on high-latency links.
 
+With the portal backend (GNOME/KDE) and working uinput, input is served entirely by uinput, so the host opens a
+pure ScreenCast portal session for capture and no longer asks for portal input/clipboard permission. KDE Plasma's
+RemoteDesktop consent dialog offers no screen picker (it always grants the whole multi-monitor desktop), while the
+ScreenCast dialog lets you pick one screen. The clipboard is then bridged via wl-clipboard (install wl-clipboard and
+keep `WAYLAND_DISPLAY` in the service environment); restore tokens are cached separately for the two session kinds.
+Without uinput access the original RemoteDesktop session is used and nothing changes.
+
 ## Servers without a monitor
 
 **Headless mode** (terminal, file transfer and port mapping only): add `Environment=UU_DESKTOP_BACKEND=none` to the
@@ -201,7 +208,7 @@ Common environment variables:
 |---|---|
 | `UU_CONFIG` | Config file path (default `~/.config/uuremote/config.json`) |
 | `UU_DESKTOP_BACKEND` | `auto` / `x11` / `wayland` / `portal` / `kms` (experimental feature) / `none` (headless) |
-| `UU_INPUT_BACKEND` | `auto` (default: uinput on Wayland when accessible) / `uinput` / `native` |
+| `UU_INPUT_BACKEND` | `auto` (default: uinput on Wayland when accessible) / `uinput` / `native`; with the portal backend and accessible uinput, capture switches to a ScreenCast session (per-screen choice on KDE, see section 5) |
 | `UU_TERMINAL_SHORTCUTS=0` | Disable the Ctrl+V paste rewrite in terminal windows |
 | `UU_VIDEO_ENCODER` | `cpu`: libx264; `vaapi`: opt-in Intel/AMD; `nvenc`: force NVENC; unset: NVENC only when an NVIDIA driver is loaded, else CPU |
 | `UU_FFMPEG_ROOT` | Use FFmpeg from this prefix |

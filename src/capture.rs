@@ -62,7 +62,13 @@ impl ScreenCapture {
                 buffer:Mutex::new(vec![0;width as usize*height as usize*4]),kms:Some(kms) });
         }
         if backend == crate::desktop_backend::DesktopBackend::Portal {
-            let session=std::sync::Arc::new(crate::portal::PortalSession::open()?);
+            // With uinput serving input, the RemoteDesktop consent is dead weight and its
+            // KDE dialog grants all monitors without a picker; a pure ScreenCast session
+            // asks for one screen instead. Input dispatch prefers uinput at runtime.
+            let uinput_wanted=crate::uinput::wanted(backend);
+            let uinput_accessible=uinput_wanted && crate::uinput::probe();
+            log::info!("Portal capture session: screencast_only={} uinput_wanted={}", uinput_accessible, uinput_wanted);
+            let session=std::sync::Arc::new(if uinput_accessible { crate::portal::PortalSession::open_screencast()? } else { crate::portal::PortalSession::open()? });
             let (width,height)=(session.width,session.height);
             return Ok(Self { backend,init_error:None,portal:Some(session),kms:None,display:"wayland:portal".into(),width,height,
                 buffer:Mutex::new(vec![0;(width as usize)*(height as usize)*4]) });

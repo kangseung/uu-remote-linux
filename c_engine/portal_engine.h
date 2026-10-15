@@ -8,6 +8,10 @@ struct uu_portal *uu_portal_open(int *error, uint32_t *width, uint32_t *height);
 /* Saves the rotated token immediately after Start, before video initialization. */
 struct uu_portal *uu_portal_open_persist(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height);
 struct uu_portal *uu_portal_open_restore(const char *restore, int *error, uint32_t *width, uint32_t *height);
+/* Pure ScreenCast session (no SelectDevices, no portal clipboard/input). Used when
+ * input goes through uinput: KDE's RemoteDesktop dialog grants all monitors without
+ * a picker, while the ScreenCast dialog offers per-screen selection. */
+struct uu_portal *uu_portal_open_screencast(const char *restore, void (*save_token)(const char *, void *), void *data, int *error, uint32_t *width, uint32_t *height);
 const char *uu_portal_restore_token(struct uu_portal *portal);
 void uu_portal_close(struct uu_portal *portal);
 int uu_portal_clipboard_ready(struct uu_portal *portal);

@@ -10,6 +10,7 @@ mod native {
     use std::{ffi::c_void, ptr::NonNull, sync::Mutex};
     extern "C" {
         fn uu_portal_open_persist(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
+        fn uu_portal_open_screencast(restore: *const libc::c_char, save: extern "C" fn(*const libc::c_char, *mut c_void), data: *mut c_void, error: *mut i32, width: *mut u32, height: *mut u32) -> *mut c_void;
         fn uu_portal_clipboard_supported(portal: *mut c_void) -> i32;
         fn uu_portal_clipboard_ready(portal: *mut c_void) -> i32;
         fn uu_portal_clipboard_set(portal: *mut c_void, text: *const u8, length: usize) -> i32;
@@ -26,15 +27,22 @@ mod native {
     // The engine owns callback threads; public calls are serialized by Mutex.
     unsafe impl Send for Handle {}
     impl Drop for Handle { fn drop(&mut self) { unsafe { uu_portal_close(self.0.as_ptr()) } } }
-    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, retry_at: Mutex<Option<std::time::Instant>>, pub width: u32, pub height: u32 }
+    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, retry_at: Mutex<Option<std::time::Instant>>, screencast: bool, pub width: u32, pub height: u32 }
     impl Session {
         pub fn is_alive(&self) -> bool {
             self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
         }
-        pub fn open() -> Result<Self, String> {
+        pub fn screencast_only(&self) -> bool { self.screencast }
+        pub fn open() -> Result<Self, String> { Self::open_kind(false) }
+        /// Capture-only ScreenCast session: no input/clipboard consent, and KDE's
+        /// dialog offers per-screen selection instead of the all-monitors grant.
+        pub fn open_screencast() -> Result<Self, String> { Self::open_kind(true) }
+        fn open_kind(screencast: bool) -> Result<Self, String> {
             let (mut error, mut width, mut height) = (0, 0, 0);
             let directory = super::permissions::directory();
-            let key = super::permissions::desktop_key();
+            // Restore tokens are scoped to the portal interface that issued them.
+            let base = super::permissions::desktop_key();
+            let key: &'static str = if screencast { if base == "kde" { "kde-screen" } else { "gnome-screen" } } else { base };
             let token = directory.as_deref().and_then(|dir| super::permissions::take(dir, key))
                 .and_then(|value| std::ffi::CString::new(value).ok());
             let mut cache = (directory, key);
@@ -48,12 +56,13 @@ mod native {
                 });
                 if result.is_err() { log::warn!("Portal permission cache callback failed"); }
             }
-            let pointer = unsafe { uu_portal_open_persist(token.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()), save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height) };
-            let handle = NonNull::new(pointer).ok_or_else(|| super::error(error))?;
+            let open = if screencast { uu_portal_open_screencast } else { uu_portal_open_persist };
+            let pointer = unsafe { open(token.as_ref().map_or(std::ptr::null(), |v| v.as_ptr()), save_token, &mut cache as *mut _ as *mut c_void, &mut error, &mut width, &mut height) };
+            let handle = NonNull::new(pointer).ok_or_else(|| if screencast && error == 6 { "Portal single monitor selection required (code 6)".into() } else { super::error(error) })?;
             // A freshly opened session holds no lock-screen frame: only an observed lock (or a
             // closed stream) must discard the cached frame. Starting "locked" cleared the first
             // valid frame, and a static desktop sends no new one, so the viewer stayed black (#2).
-            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), retry_at: Mutex::new(None), width, height })
+            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), retry_at: Mutex::new(None), screencast, width, height })
         }
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
             let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
@@ -82,7 +91,7 @@ mod native {
                 let mut retry = self.retry_at.lock().map_err(|_| "Portal recovery lock poisoned")?;
                 let deadline = retry.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(1));
                 if std::time::Instant::now() < *deadline { super::blank(frame); return Ok(()); }
-                let replacement = match Self::open() {
+                let replacement = match Self::open_kind(self.screencast) {
                     Ok(value) => value,
                     Err(error) => {
                         log::warn!("Portal capture recovery deferred: {error}");
@@ -102,7 +111,7 @@ mod native {
         }
 
         pub fn clipboard_supported(&self) -> bool {
-            self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_supported(handle.0.as_ptr()) != 0 })
+            !self.screencast && self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_supported(handle.0.as_ptr()) != 0 })
         }
         pub fn clipboard_ready(&self) -> bool {
             self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_clipboard_ready(handle.0.as_ptr()) != 0 })
@@ -121,16 +130,19 @@ mod native {
             bytes.truncate(length as usize); String::from_utf8(bytes).ok()
         }
         pub fn move_pointer(&self, x: f64, y: f64, relative: bool) -> Result<(), String> {
+            if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_move(handle.0.as_ptr(), x, y, i32::from(relative)) })
         }
         pub fn button(&self, button: i32, pressed: bool) -> Result<(), String> {
+            if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
             super::check(unsafe { uu_portal_button(handle.0.as_ptr(), button, i32::from(pressed)) })
         }
         pub fn key(&self, symbol: u64, pressed: bool) -> Result<(), String> {
+            if self.screencast { return Err("ScreenCast session carries no input".into()); }
             if pressed && *self.locked.borrow() != Some(false) { return Err("Portal input blocked while locked".into()); }
             let symbol = u32::try_from(symbol).map_err(|_| "Invalid Portal keysym")?;
             let handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
@@ -164,7 +176,9 @@ impl PortalSession {
     pub fn clipboard_set(&self, _: &str) -> Result<(), String> { Err(error(2)) }
     pub fn clipboard_poll(&self) -> Option<String> { None }
     pub fn is_alive(&self) -> bool { false }
+    pub fn screencast_only(&self) -> bool { false }
     pub fn open() -> Result<Self, String> { Err("Portal backend requires Linux and --features portal".into()) }
+    pub fn open_screencast() -> Result<Self, String> { Self::open() }
     pub fn capture(&self, _: &mut [u8]) -> Result<(), String> { Err(error(2)) }
     pub fn move_pointer(&self, _: f64, _: f64, _: bool) -> Result<(), String> { Err(error(2)) }
     pub fn button(&self, _: i32, _: bool) -> Result<(), String> { Err(error(2)) }

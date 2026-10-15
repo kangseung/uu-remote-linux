@@ -286,7 +286,10 @@ impl WebRtcSession {
         // locked. Echo can precede TEXT readiness and CONTROL auto-unlock;
         // advertising false here would disable clipboard for the entire peer.
         let portal_clipboard_supported = desktop && capture.portal.as_ref().is_some_and(|session| session.clipboard_supported());
-        let text_clipboard_ready = Arc::new(std::sync::atomic::AtomicBool::new(portal_clipboard_supported));
+        // ScreenCast-only sessions carry no portal clipboard; wl-clipboard bridges it instead.
+        let wayland_clipboard_ready = desktop && capture.portal.as_ref().is_some_and(|session| session.screencast_only())
+            && crate::clipboard::wayland_tools_ready();
+        let text_clipboard_ready = Arc::new(std::sync::atomic::AtomicBool::new(portal_clipboard_supported || wayland_clipboard_ready));
         // One file-transfer session per peer. The viewer may send FileTransferFtp RPCs on CONTROL,
         // but it receives file traffic only through streamerDidReceiveFileData, so every reply and
         // host-initiated request goes out on FILE_DATA_CHANNEL.
@@ -389,7 +392,12 @@ impl WebRtcSession {
                         Box::pin(async move {
                           if channel.label() == "TEXT_DATA_CHANNEL" {
                             if !desktop { return; }
-                            let bridge = if let Some(session)=screen.portal.clone() { crate::clipboard::start_portal(session) } else { crate::clipboard::start(screen.display.clone()) };
+                            let bridge = match screen.portal.clone() {
+                                Some(session) if !session.screencast_only() => crate::clipboard::start_portal(session),
+                                // ScreenCast-only session: no portal clipboard, use wl-clipboard.
+                                Some(_) => crate::clipboard::start_wayland(),
+                                None => crate::clipboard::start(screen.display.clone()),
+                            };
                             *clipboard_sink.lock().unwrap() = Some(bridge.incoming);
                             let clipboard_channel = channel.clone();
                             let clipboard_sequence = sequence.clone();

@@ -214,6 +214,15 @@ pub fn wanted(backend: crate::desktop_backend::DesktopBackend) -> bool {
     }
 }
 
+/// Access check without creating kernel devices (Devices::open does that).
+#[cfg(target_os = "linux")]
+pub fn probe() -> bool {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open("/dev/uinput").is_ok()
+}
+#[cfg(not(target_os = "linux"))]
+pub fn probe() -> bool { false }
+
 #[cfg(test)]
 mod tests {
     use super::*;

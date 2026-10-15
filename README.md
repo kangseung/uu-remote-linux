@@ -158,6 +158,12 @@ sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
 `uaccess` 只把权限给当前坐在这台机器前的登录用户。`UU_INPUT_BACKEND=uinput|native` 可以强制指定后端。
 X11 默认继续用 XTest，因为它能正确处理网络延迟下按住不放的按键。
 
+portal 后端（GNOME/KDE）下如果 uinput 可用，键鼠完全由 uinput 接管，服务会改用纯「屏幕共享
+（ScreenCast）」portal 会话截屏，不再申请 portal 的输入和剪贴板权限。这样做是因为 KDE Plasma
+的「远程桌面」授权弹窗不能选屏（总是授权整个多屏桌面），而「屏幕共享」弹窗可以逐屏选择。
+此时剪贴板改由 wl-clipboard 桥接（需安装 wl-clipboard，并保留 `WAYLAND_DISPLAY` 环境变量）；
+两种会话的授权记忆（restore token）分开保存。uinput 不可用时仍走原来的远程桌面会话，行为不变。
+
 ## 没有显示器的服务器
 
 **无头模式**：只要终端、文件传输和端口映射，不需要图形界面。在服务里加 `Environment=UU_DESKTOP_BACKEND=none`，
@@ -191,7 +197,7 @@ systemctl --user restart uuremote-native.service
 |---|---|
 | `UU_CONFIG` | 配置文件路径（默认 `~/.config/uuremote/config.json`） |
 | `UU_DESKTOP_BACKEND` | `auto` / `x11` / `wayland` / `portal` / `kms`（实验性特性） / `none`（无头模式） |
-| `UU_INPUT_BACKEND` | `auto`（默认，Wayland 下可用时用 uinput）/ `uinput` / `native` |
+| `UU_INPUT_BACKEND` | `auto`（默认，Wayland 下可用时用 uinput）/ `uinput` / `native`；portal 后端 + uinput 可用时截屏改用 ScreenCast 会话（KDE 上可逐屏选择，见上文第 5 节） |
 | `UU_TERMINAL_SHORTCUTS=0` | 关闭终端窗口里的 Ctrl+V 粘贴转换 |
 | `UU_VIDEO_ENCODER` | `cpu` 强制 CPU；`vaapi` 显式启用 Intel/AMD 硬编；`nvenc` 强制 NVENC；未设置时检测到 NVIDIA 驱动才用 NVENC，否则用 CPU |
 | `UU_FFMPEG_ROOT` | 使用指定目录下的 FFmpeg |
