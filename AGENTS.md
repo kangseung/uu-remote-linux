@@ -116,7 +116,7 @@ viewer does not reconnect them automatically.
 | `UU_FFMPEG_ROOT` | FFmpeg prefix (`bin/ffmpeg`, libs in `lib/x86_64-linux-gnu`) |
 | `UU_AUDIO=0`, `UU_AUDIO_SOURCE` | disable sound / choose the Pulse source (default `@DEFAULT_MONITOR@`) |
 | `UU_LOGIN_WINDOW=0` | don't auto-open the login window |
-| `UU_STREAM_LOCK_SCREEN=1` | keep streaming the lock screen instead of blanking (KDE keeps the PipeWire stream alive on lock; input via uinput still reaches the lock screen). Default off = privacy |
+| `UU_STREAM_LOCK_SCREEN=1` | keep streaming the lock screen instead of blanking (KDE keeps the PipeWire stream alive on lock; input via uinput still reaches the lock screen). Default off = privacy. Either way the portal session is rebuilt on the lock→unlock edge: KDE's stream stays "alive" but silently stops delivering real frames after unlock |
 
 Token has no expiry field; API code 1120 (HTTP 422) means invalid/expired → re-login. The config is re-read
 every 60 s.
@@ -226,6 +226,8 @@ started a second full host server instead, so check that a subcommand exists in 
   no portal clipboard; input/clipboard FFI report unsupported). `src/capture.rs` picks ScreenCast when
   `uinput::wanted(backend) && uinput::probe()`; restore tokens use a separate `<desktop>-screen` cache key, and the
   text clipboard falls back to the wl-clipboard bridge (`clipboard::start_wayland`) for ScreenCast sessions.
+  `InputInjector` opens uinput eagerly at startup and retries lazily in `bind_portal`, because the systemd
+  user service can start before the Wayland socket exists and initially detect X11 (which skips uinput).
 
 ## 9. Debugging checklist
 

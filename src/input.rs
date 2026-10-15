@@ -40,22 +40,31 @@ struct HeldInput { buttons: std::collections::BTreeSet<i32>, keys: std::collecti
 #[derive(Default)]
 struct Shortcuts { modifiers: u8, shifted: std::collections::BTreeSet<i32> }
 
-pub struct InputInjector { shortcuts: std::sync::Mutex<Shortcuts>, uinput: Option<crate::uinput::Devices>, screen: std::sync::Mutex<(u32,u32)>, portal_failures: std::sync::atomic::AtomicUsize, portal_outcomes: [std::sync::atomic::AtomicUsize; 3], portal:std::sync::Mutex<Option<std::sync::Arc<crate::portal::PortalSession>>>, backend: crate::desktop_backend::DesktopBackend, pending: std::sync::Mutex<PendingPointer>, held: std::sync::Mutex<HeldInput>, text_paste: std::sync::Mutex<()>, absolute_mapping: std::sync::Mutex<Option<crate::input_mapping::AbsoluteMapping>> }
+pub struct InputInjector { shortcuts: std::sync::Mutex<Shortcuts>, uinput: std::sync::Mutex<Option<crate::uinput::Devices>>, screen: std::sync::Mutex<(u32,u32)>, portal_failures: std::sync::atomic::AtomicUsize, portal_outcomes: [std::sync::atomic::AtomicUsize; 3], portal:std::sync::Mutex<Option<std::sync::Arc<crate::portal::PortalSession>>>, backend: std::sync::Mutex<crate::desktop_backend::DesktopBackend>, pending: std::sync::Mutex<PendingPointer>, held: std::sync::Mutex<HeldInput>, text_paste: std::sync::Mutex<()>, absolute_mapping: std::sync::Mutex<Option<crate::input_mapping::AbsoluteMapping>> }
 
 impl InputInjector {
     pub fn new() -> Self {
         let backend = crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11);
-        let uinput = if crate::uinput::wanted(backend) {
-            match crate::uinput::Devices::open() {
-                Ok(devices) => { log::info!("Input backend: uinput (kernel virtual keyboard/pointer)"); Some(devices) }
-                Err(e) => { log::warn!("uinput unavailable ({}); using the desktop input path. See README for the udev rule.", e.kind()); None }
-            }
-        } else { None };
-        Self { shortcuts: std::sync::Mutex::new(Shortcuts::default()), uinput, screen: std::sync::Mutex::new((0,0)), portal_failures: std::sync::atomic::AtomicUsize::new(0), portal_outcomes: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)), portal:std::sync::Mutex::new(None), backend:crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11), pending: std::sync::Mutex::new(PendingPointer::default()), held:std::sync::Mutex::new(HeldInput::default()), text_paste: std::sync::Mutex::new(()), absolute_mapping: std::sync::Mutex::new(None) }
+        Self { shortcuts: std::sync::Mutex::new(Shortcuts::default()), uinput: std::sync::Mutex::new(Self::open_uinput(backend)), screen: std::sync::Mutex::new((0,0)), portal_failures: std::sync::atomic::AtomicUsize::new(0), portal_outcomes: std::array::from_fn(|_| std::sync::atomic::AtomicUsize::new(0)), portal:std::sync::Mutex::new(None), backend:std::sync::Mutex::new(backend), pending: std::sync::Mutex::new(PendingPointer::default()), held:std::sync::Mutex::new(HeldInput::default()), text_paste: std::sync::Mutex::new(()), absolute_mapping: std::sync::Mutex::new(None) }
+    }
+
+    fn open_uinput(backend: crate::desktop_backend::DesktopBackend) -> Option<crate::uinput::Devices> {
+        if !crate::uinput::wanted(backend) { return None; }
+        match crate::uinput::Devices::open() {
+            Ok(devices) => { log::info!("Input backend: uinput (kernel virtual keyboard/pointer)"); Some(devices) }
+            Err(e) => { log::warn!("uinput unavailable ({}); using the desktop input path. See README for the udev rule.", e.kind()); None }
+        }
     }
 
     pub fn bind_portal(&self,session:Option<std::sync::Arc<crate::portal::PortalSession>>) {
         log::info!("Desktop portal input binding updated: bound={}", session.is_some());
+        if session.is_some() {
+            *self.backend.lock().unwrap()=crate::desktop_backend::DesktopBackend::Portal;
+            // The service can start before the Wayland socket exists and build with
+            // backend=X11, skipping uinput; retry once the portal session is real.
+            let mut uinput=self.uinput.lock().unwrap();
+            if uinput.is_none() { *uinput=Self::open_uinput(crate::desktop_backend::DesktopBackend::Portal); }
+        }
         *self.portal.lock().unwrap()=session;
     }
     /// uinput's absolute tablet spans the whole desktop bounding box; a single-screen
@@ -129,9 +138,9 @@ impl InputInjector {
         if result == 0 {
             let mut held = self.held.lock().unwrap();
             if is_press { held.buttons.insert(button); } else { held.buttons.remove(&button); }
-        } else if self.backend != crate::desktop_backend::DesktopBackend::Portal { log::warn!("Desktop mouse injection failed: {}",result); }
+        } else if *self.backend.lock().unwrap() != crate::desktop_backend::DesktopBackend::Portal { log::warn!("Desktop mouse injection failed: {}",result); }
         static BUTTON_AUDIT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
-        if self.backend==crate::desktop_backend::DesktopBackend::X11 && BUTTON_AUDIT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)<24 {
+        if *self.backend.lock().unwrap()==crate::desktop_backend::DesktopBackend::X11 && BUTTON_AUDIT.fetch_add(1,std::sync::atomic::Ordering::Relaxed)<24 {
             let (mut x,mut y,mut mask)=(0,0,0);
             let query=unsafe {x11_pointer_state(&mut x,&mut y,&mut mask)};
             log::info!("Pointer button audit: button={} down={} result={} query={} x={} y={} mask={}",button,is_press,result,query,x,y,mask);
@@ -279,7 +288,7 @@ impl InputInjector {
         }
     }
     fn inject_move(&self,x:i32,y:i32,relative:bool)->i32 {
-        if let Some(uinput)=&self.uinput {
+        if let Some(uinput)=self.uinput.lock().unwrap().as_ref() {
             if relative { return Self::uinput_result(uinput.move_relative(x,y)); }
             let (w,h)=*self.screen.lock().unwrap();
             if w > 1 && h > 1 {
@@ -291,35 +300,38 @@ impl InputInjector {
                 return Self::uinput_result(uinput.move_absolute(scale(x,w),scale(y,h)));
             }
         }
-        if self.backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
+        let backend=*self.backend.lock().unwrap();
+        if backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
         if let Some(portal)=self.portal.lock().unwrap().as_ref() { return self.portal_result("motion", portal.move_pointer(f64::from(x),f64::from(y),relative)); }
-        if self.backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("motion", Err("Portal input session is not bound".into()));}
-        if self.backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::move_pointer(x,y,relative) }
+        if backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("motion", Err("Portal input session is not bound".into()));}
+        if backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::move_pointer(x,y,relative) }
         else if relative { unsafe { x11_mouse_relative(x,y) } } else { unsafe { x11_mouse_move(x,y) } }
     }
     fn inject_button(&self,button:i32,pressed:bool)->i32 {
-        if let Some(uinput)=&self.uinput {
+        if let Some(uinput)=self.uinput.lock().unwrap().as_ref() {
             if let Some((v,h))=crate::uinput::wheel_step(button) { return if pressed { Self::uinput_result(uinput.wheel(v,h)) } else { 0 }; }
             if let Some(code)=crate::uinput::button_code(button) { return Self::uinput_result(uinput.button(code,pressed)); }
         }
-        if self.backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
+        let backend=*self.backend.lock().unwrap();
+        if backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
         if let Some(portal)=self.portal.lock().unwrap().as_ref() { return self.portal_result("button", portal.button(button,pressed)); }
-        if self.backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("button", Err("Portal input session is not bound".into()));}
-        if self.backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::button(button,pressed) }
+        if backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("button", Err("Portal input session is not bound".into()));}
+        if backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::button(button,pressed) }
         else { unsafe { x11_mouse_button(button,i32::from(pressed)) } }
     }
     fn inject_key(&self,symbol:u64,pressed:bool)->i32 {
-        if let Some(uinput)=&self.uinput {
+        if let Some(uinput)=self.uinput.lock().unwrap().as_ref() {
             if let Some(code)=crate::uinput::keysym_to_evdev(symbol) { return Self::uinput_result(uinput.key(code,pressed)); }
         }
-        if self.backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
+        let backend=*self.backend.lock().unwrap();
+        if backend==crate::desktop_backend::DesktopBackend::Kms { return -1; }
         if let Some(portal)=self.portal.lock().unwrap().as_ref() { return self.portal_result("keyboard", portal.key(symbol,pressed)); }
-        if self.backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("keyboard", Err("Portal input session is not bound".into()));}
-        if self.backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::key(symbol,pressed) }
+        if backend==crate::desktop_backend::DesktopBackend::Portal {return self.portal_result("keyboard", Err("Portal input session is not bound".into()));}
+        if backend==crate::desktop_backend::DesktopBackend::Wayland { crate::wayland::key(symbol,pressed) }
         else { unsafe { x11_key_symbol(symbol as libc::c_ulong,i32::from(pressed)) } }
     }
     pub fn key_event(&self, keycode: i32, is_press: bool) {
-        if self.backend!=crate::desktop_backend::DesktopBackend::X11 { return; }
+        if *self.backend.lock().unwrap()!=crate::desktop_backend::DesktopBackend::X11 { return; }
         unsafe { x11_key_event(keycode, if is_press { 1 } else { 0 }) };
     }
 }

@@ -28,7 +28,7 @@ mod native {
     // The engine owns callback threads; public calls are serialized by Mutex.
     unsafe impl Send for Handle {}
     impl Drop for Handle { fn drop(&mut self) { unsafe { uu_portal_close(self.0.as_ptr()) } } }
-    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, retry_at: Mutex<Option<std::time::Instant>>, screencast: bool, pub width: u32, pub height: u32 }
+    pub struct Session { handle: Mutex<Handle>, locked: tokio::sync::watch::Receiver<Option<bool>>, was_locked: std::sync::atomic::AtomicBool, lock_seen: std::sync::atomic::AtomicU8, retry_at: Mutex<Option<std::time::Instant>>, screencast: bool, pub width: u32, pub height: u32 }
     impl Session {
         pub fn is_alive(&self) -> bool {
             self.handle.lock().is_ok_and(|handle| unsafe { uu_portal_alive(handle.0.as_ptr()) != 0 })
@@ -79,7 +79,7 @@ mod native {
             // A freshly opened session holds no lock-screen frame: only an observed lock (or a
             // closed stream) must discard the cached frame. Starting "locked" cleared the first
             // valid frame, and a static desktop sends no new one, so the viewer stayed black (#2).
-            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), retry_at: Mutex::new(None), screencast, width, height })
+            Ok(Self { handle: Mutex::new(Handle(handle)), locked: crate::session_lock::watch_locked(), was_locked: std::sync::atomic::AtomicBool::new(false), lock_seen: std::sync::atomic::AtomicU8::new(0), retry_at: Mutex::new(None), screencast, width, height })
         }
         pub fn capture(&self, frame: &mut [u8]) -> Result<(), String> {
             let mut handle = self.handle.lock().map_err(|_| "Portal session lock poisoned")?;
@@ -88,6 +88,7 @@ mod native {
                 // Unknown state (watcher not reported yet): show nothing but keep the cached frame.
                 if state == Some(true) {
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
+                    self.lock_seen.store(1, std::sync::atomic::Ordering::Release);
                     unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
                 }
                 super::blank(frame); return Ok(());
@@ -97,14 +98,23 @@ mod native {
                 unsafe { uu_portal_reset_frame(handle.0.as_ptr()) };
                 super::blank(frame); return Ok(());
             }
-            if unsafe { uu_portal_alive(handle.0.as_ptr()) } == 0 {
+            // KDE keeps the session and stream "alive" across an unlock but stops
+            // delivering real frames (the viewer sees black) without any PipeWire
+            // error, so the !alive rebuild below never fires. Rebuild once per
+            // lock→unlock edge instead. lock_seen: 0 unknown, 1 locked, 2 unlocked.
+            let seen = match state { Some(true) => 1, Some(false) => 2, None => 0 };
+            let previous = self.lock_seen.load(std::sync::atomic::Ordering::Acquire);
+            let unlock_edge = previous == 1 && seen == 2;
+            let alive = unsafe { uu_portal_alive(handle.0.as_ptr()) } != 0;
+            if !alive || unlock_edge {
                 // GNOME can close the stream before the periodic lock watcher updates.
-                if crate::session_lock::locked_now() != Some(false) {
+                if !alive && crate::session_lock::locked_now() != Some(false) {
                     self.was_locked.store(true, std::sync::atomic::Ordering::Release);
                     super::blank(frame); return Ok(());
                 }
                 // logind's LockedHint can lag compositor stream closure. Give it a
                 // full watcher interval before attempting another permission session.
+                // Early returns here keep the unlock edge pending so it is retried.
                 let mut retry = self.retry_at.lock().map_err(|_| "Portal recovery lock poisoned")?;
                 let deadline = retry.get_or_insert_with(|| std::time::Instant::now() + std::time::Duration::from_secs(1));
                 if std::time::Instant::now() < *deadline { super::blank(frame); return Ok(()); }
@@ -121,8 +131,9 @@ mod native {
                     return Err("Portal dimensions changed; reconnect required".into());
                 }
                 *handle = replacement.handle.into_inner().map_err(|_| "Portal session lock poisoned")?;
-                log::info!("Portal capture session restored after closure");
+                log::info!("Portal capture session rebuilt: reason={}", if unlock_edge { "unlock" } else { "closed" });
             }
+            self.lock_seen.store(seen, std::sync::atomic::Ordering::Release);
             let code = unsafe { uu_portal_capture(handle.0.as_ptr(), frame.as_mut_ptr(), frame.len()) };
             if code == 10 || code == 9 { super::blank(frame); Ok(()) } else { super::check(code) }
         }
