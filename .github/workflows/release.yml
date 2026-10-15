@@ -20,8 +20,9 @@ jobs:
             libx11-dev libxext-dev libxtst-dev libxfixes-dev libgtk-3-dev \
             libwayland-dev libxkbcommon-dev libglib2.0-dev libpipewire-0.3-dev
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release --locked
-      - run: cargo build --release --locked
+      - run: cargo test --release --locked --features wayland,portal
+      # Tarball and deb ship the same wayland,portal build: KDE/GNOME Wayland needs portal capture.
+      - run: cargo build --release --locked --features wayland,portal
       - name: Package
         run: |
           name=uu-remote-linux-${GITHUB_REF_NAME}-x86_64-linux
@@ -30,7 +31,7 @@ jobs:
           cp -r contrib "$name/"
           tar czf "$name.tar.gz" "$name"
           sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
-      # After the tarball step: build-deb.sh rebuilds with wayland,portal, replacing the binary in target/.
+      # Same features as the tarball build, so this deb step reuses the cached binary.
       - name: Build Debian package
         run: packaging/deb/build-deb.sh
       - uses: softprops/action-gh-release@v2
