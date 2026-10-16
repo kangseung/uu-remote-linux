@@ -41,3 +41,14 @@ done
 out="packaging/deb/${pkg}_${version}_amd64.deb"
 dpkg-deb --build --root-owner-group "$stage" "$root/$out"
 echo "Built $root/$out"
+
+# A local build links the build machine's glibc (e.g. GLIBC_2.38+ on Debian 13/LMDE7)
+# and will NOT run on Ubuntu 22.04/Debian 12 (glibc 2.35/2.36). Redistribution builds
+# come from the CI release job (ubuntu-22.04).
+glibc=$(ldd --version | sed -n '1s/.* //p')
+if [ "$(printf '2.35\n%s\n' "$glibc" | sort -V | tail -1)" = "$glibc" ] && [ "$glibc" != "2.35" ]; then
+    echo "WARNING: built against glibc $glibc (> 2.35). This deb only runs on systems with glibc >= $glibc." >&2
+    echo "         Do NOT share it with Ubuntu 22.04 / Debian 12 / Mint 21 machines;" >&2
+    echo "         use the GitHub Releases deb (CI, ubuntu-22.04) for distribution." >&2
+    echo "         警告：本机 glibc $glibc 过新，此 deb 不能发给 Ubuntu 22.04/Debian 12/Mint 21；分发请用 GitHub Releases 的 CI 构建。" >&2
+fi
