@@ -20,6 +20,23 @@
      and uncomment the next line. -->
 <!-- <p align="center"><img src="docs/images/remote-desktop.png" width="720" alt="Linux desktop in the official Mac client"></p> -->
 
+> **About this fork (kangseung/uu-remote-linux)**
+>
+> This repository is a fork of the original [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)
+> by [@ai_fengshou](https://x.com/ai_fengshou). Every upstream statement above (unofficial, not affiliated with
+> NetEase, taken down on request) applies to this fork as well.
+>
+> Motivation: make **KDE Plasma 6 (Wayland)** and **Cinnamon (X11)** genuinely usable on real hardware, and turn
+> installation into a one-command deb (which registers a systemd user service: autostart at login, auto-restart
+> on crash, one QR scan and the machine stays online).
+>
+> Verified on real machines:
+>
+> - **LMDE 7 (Debian 13) + KDE Plasma 6.3 + Wayland, dual monitors** — main development/test machine, daily use
+> - **Linux Mint 21 (Ubuntu 22.04 base) + Cinnamon + X11** — verified on a real install
+>
+> See the "Changes in this fork" section below for the full list.
+
 ## What it is
 
 - A native Linux program written in Rust: no Wine, no Windows or macOS components.
@@ -60,14 +77,39 @@
 | Cinnamon / MATE | X11 | ✅ Tested in a VM | default |
 | Hyprland | Wayland (native wlroots protocols) | 🧪 Experimental, tested in a VM (some features limited, see below) | `--features wayland` |
 | GNOME / KDE Plasma | Wayland (xdg-desktop-portal) | 🧪 Experimental, tested in a VM (some features limited, see below) | `--features wayland,portal` |
+| **KDE Plasma 6.3 (LMDE 7 / Debian 13)** | Wayland (portal) | ✅ In daily use on real hardware in this fork (lock/unlock, DPMS wake, uinput input, CJK IME verified) | included in the deb |
+| **Cinnamon (Linux Mint 21)** | X11 | ✅ Verified on real hardware in this fork (ffmpeg 4.4 compat, login crash fix) | deb (default X11 path) |
 
-Apart from GNOME on X11, these desktops have been tested in virtual machines so far. If something goes wrong on
+Apart from the rows marked as real-hardware in this fork, these desktops have been tested in virtual machines so far. If something goes wrong on
 real hardware, please [open an issue](../../issues) with your distribution, desktop, GPU and the relevant lines from
 `journalctl --user -u uuremote-native.service`.
 
 Wayland limits: single screen, fixed resolution. The native Hyprland backend captures via shm screencopy, so the frame rate is bounded by the compositor (about 16–22 fps measured at 2560x1600) and the viewer fps option has no effect. The portal backend does not support screen wake or
 dynamic resolution yet; the clipboard syncs while the viewer's remote window has focus. On the first connection the desktop asks for "Remote Desktop / Screen Sharing"
 permission; the permission is remembered once granted.
+
+## Changes in this fork
+
+All verified on real hardware (see the machines listed at the top); details live in the [release notes](docs/release-notes/):
+
+**One-command packaging**
+- deb package: installs dependencies, the `/dev/uinput` udev rule and a systemd user service (autostart at login, auto-restart on crash); CI builds it on ubuntu-22.04 so any glibc ≥ 2.35 distro works (Debian 12/13, Ubuntu 22.04/24.04, Mint 21, LMDE)
+- Local source builds now warn loudly when the machine's glibc is too new for redistribution (prevents "GLIBC_2.38 not found" on the recipient's machine)
+
+**KDE Plasma 6 Wayland (main target)**
+- Capture uses a ScreenCast-only portal session: KDE's RemoteDesktop consent dialog has no screen picker, ScreenCast's does; consent is persisted via restore tokens (no repeated prompts)
+- Boot race fixed: a systemd user service started before Plasma no longer misdetects the backend as X11; the live Wayland socket is probed and the portal backend is selected (fixes "online but desktop unreachable after reboot")
+- uinput virtual keyboard/pointer now initializes lazily when the portal session binds (fixes completely dead input after that same race)
+- Lock screen: with `UU_STREAM_LOCK_SCREEN=1` the lock screen keeps streaming and the password can be typed directly into it; the capture session is rebuilt on every lock→unlock edge (fixes the black screen after unlock)
+- Displays turned off by power saving (DPMS) are woken via `SimulateUserActivity` (fixes all-black streams while the monitor is off)
+- Pointer offset fix when capturing a single screen of a multi-monitor setup (xdg-output layout mapping)
+
+**Cinnamon / X11 (Mint 21)**
+- Fixed a sporadic segfault on the first QR login: `XInitThreads()` now runs in a C library constructor (before `main`), so GTK and worker threads never share an unlocked libX11
+- ffmpeg 4.4 compatibility: the encoder probes once and uses `-vsync passthrough` instead of `-fps_mode vfr` on old ffmpeg (fixes viewers stuck at the loading screen on Ubuntu 22.04/Mint 21/Debian 12)
+
+**Misc**
+- Phone IME text goes straight to the host (ASCII as keystrokes, CJK via a clipboard paste that saves and restores the previous content)
 
 ## Not implemented / not supported
 

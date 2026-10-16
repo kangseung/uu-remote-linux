@@ -17,6 +17,21 @@
      docs/images/remote-desktop.png，再取消下面这行的注释。注意不要截入网易的图标和品牌素材。 -->
 <!-- <p align="center"><img src="docs/images/remote-desktop.png" width="720" alt="用官方 Mac 客户端远控 Linux 桌面"></p> -->
 
+> **关于本 Fork（kangseung/uu-remote-linux）**
+>
+> 本项目 fork 自原作者的 [VallierDev/uu-remote-linux](https://github.com/VallierDev/uu-remote-linux)（[@ai_fengshou](https://x.com/ai_fengshou)），
+> 上游的全部声明（非官方、与网易无关、如有异议即下架）对本 fork 同样适用。
+>
+> Fork 动机：把 **KDE Plasma 6（Wayland）** 和 **Cinnamon（X11）** 在真机上调到日常可用，并把安装做成 deb 一键部署
+> （装完自动注册 systemd 用户服务，开机自启、崩溃自拉起，扫码一次永久上线）。
+>
+> 实机适配验证过的机型：
+>
+> - **LMDE 7（Debian 13）+ KDE Plasma 6.3 + Wayland 双屏** —— 主力开发/测试机，长期使用
+> - **Linux Mint 21（Ubuntu 22.04 底座）+ Cinnamon + X11** —— 实机装机验证
+>
+> 本 fork 相对上游的具体改动见下文「本 fork 的改动」一节。
+
 ## 它是什么
 
 - 一个纯 Rust 写的 Linux 原生程序（不需要 Wine，也不需要任何 Windows/macOS 组件）。
@@ -56,12 +71,37 @@
 | Cinnamon / MATE | X11 | ✅ 虚拟机测试通过 | 默认 |
 | Hyprland | Wayland（wlroots 原生协议） | 🧪 实验性，虚拟机测试（部分功能受限，见下） | `--features wayland` |
 | GNOME / KDE Plasma | Wayland（xdg-desktop-portal） | 🧪 实验性，虚拟机测试（部分功能受限，见下） | `--features wayland,portal` |
+| **KDE Plasma 6.3（LMDE 7 / Debian 13）** | Wayland（portal） | ✅ 本 fork 实机长期使用（锁屏解锁、熄屏唤醒、uinput 键鼠、中文输入均验证） | deb 已内置 |
+| **Cinnamon（Linux Mint 21）** | X11 | ✅ 本 fork 实机验证（ffmpeg 4.4 兼容、登录崩溃修复） | deb（默认 X11 路径） |
 
-除 GNOME（X11）外，其余桌面目前都是在虚拟机里测试的。如果你在真机上遇到问题，欢迎[提交 issue](../../issues)，
+除标注「本 fork 实机」的行外，其余桌面目前都是在虚拟机里测试的。如果你在真机上遇到问题，欢迎[提交 issue](../../issues)，
 请附上发行版、桌面环境、显卡型号和 `journalctl --user -u uuremote-native.service` 里的相关日志。
 
 Wayland 下的限制：只支持单屏、固定分辨率；Hyprland 原生后端通过 shm screencopy 截屏，帧率受合成器限制（2560x1600 实测约 16～22 帧），控制端的帧率选项不生效；portal 后端暂不支持唤醒屏幕和动态分辨率；剪贴板只在控制端的远控窗口处于前台时同步。
 首次连接时，桌面会弹窗请求「远程桌面 / 屏幕共享」授权，同意后会记住授权。
+
+## 本 fork 的改动
+
+以下改动均已在真机验证（机型见文首），详细说明见 [release notes](docs/release-notes/)：
+
+**一键部署与打包**
+- deb 安装包：自动装齐依赖、`/dev/uinput` udev 规则、systemd 用户服务（开机自启、崩溃自拉起）；CI 在 ubuntu-22.04 上构建，glibc ≥ 2.35 的系统（Debian 12/13、Ubuntu 22.04/24.04、Mint 21、LMDE）都能装
+- 本机源码打包时若 glibc 过新（如 Debian 13）会明确警告"不要分发此包"，避免对方机器报 GLIBC 缺失
+
+**KDE Plasma 6 Wayland 适配（主力场景）**
+- 抓屏改用纯 ScreenCast portal 会话：KDE 的 RemoteDesktop 授权框不能选屏幕，ScreenCast 的可以；授权结果持久化，不反复弹窗
+- 开机竞态修复：systemd 服务先于 Plasma 启动时不再误判 X11 后端，探测活跃 Wayland socket 自动落到 portal（修复"重启后手机显示在线但连不上桌面"）
+- uinput 虚拟键鼠改为绑定时延迟初始化（修复上述竞态导致的键鼠完全失效）
+- 锁屏体验：`UU_STREAM_LOCK_SCREEN=1` 时锁屏画面照常推流、可直接在锁屏界面输密码解锁；锁屏→解锁后自动重建抓屏会话（修复解锁后黑屏）
+- 显示器节能熄灭（DPMS）时自动通过 `SimulateUserActivity` 唤醒（修复熄屏后所有抓屏流全黑）
+- 多显示器只抓单屏时的鼠标落点偏移修复（xdg-output 布局换算）
+
+**Cinnamon / X11（Mint 21）适配**
+- 修复首次扫码登录偶发段错误：`XInitThreads()` 改为 C 库构造函数调用（先于 main），杜绝 GTK 线程与后台线程并发用未加锁的 libX11
+- 兼容 ffmpeg 4.4：编码器启动前自动探测参数形式，老版本用 `-vsync passthrough` 替代 `-fps_mode vfr`（修复老系统上手机端永远卡在"传输画面"）
+
+**其他**
+- 手机系统输入法文字直输被控端（ASCII 走按键，中文等非 ASCII 走剪贴板瞬时粘贴并恢复原剪贴板）
 
 ## 尚未实现 / 不支持
 
