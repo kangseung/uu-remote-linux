@@ -24,6 +24,14 @@ static int g_width = 0;
 static int g_height = 0;
 static int g_depth = 0;
 
+/* XInitThreads must run before the FIRST XOpenDisplay in the process. The login
+ * flow starts GTK (GDK opens its own X connection on the ui thread) before
+ * x11_init() is reached, so the lazy call below returns 0 with locking never
+ * enabled, and concurrent Xlib use from the GTK and tokio threads segfaults
+ * (XrmQGetResource -> pthread_mutex_lock(NULL)). A library constructor runs
+ * before main(), which is the only ordering that cannot regress. */
+__attribute__((constructor)) static void x11_threads_early(void) { XInitThreads(); }
+
 static XShmSegmentInfo g_shminfo;
 static XImage *g_shm_image = NULL;
 static int g_use_shm = 0;

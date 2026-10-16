@@ -213,6 +213,9 @@ started a second full host server instead, so check that a subcommand exists in 
 - systemd/D-Bus-activated apps (GNOME Terminal, portals) run with the user manager's environment, not the caller's:
   a private `dbus-run-session` bus does not bring them onto a virtual display.
 - GTK windows stop repainting while GNOME is locked or the monitor is off; test UI on Xvfb or after unlock.
+- `XInitThreads()` runs in a library constructor in `x11_engine.c`, never lazily: the login flow's GTK thread
+  opens its own X connection before `x11_init()`, and a late call leaves libX11 unlocked → concurrent Xlib use
+  from GTK + tokio threads segfaults (observed on Mint 21/Cinnamon, 3/3 repro on first login).
 - logind `unlock-session` by the session owner clears the GNOME shield in ~3 s.
 - GNOME closes the portal session on lock; capture/input must share one portal session and be rebuilt after
   unlock. Portal input/clipboard permissions are persisted per desktop (0600 file); a revoked permission asks again.
