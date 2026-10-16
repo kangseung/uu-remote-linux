@@ -193,9 +193,11 @@ pub struct AbsoluteMapping {
 
 impl AbsoluteMapping {
     /// Resolve the captured screen's logical rect against the desktop layout.
-    /// Origin comes from the portal stream `position`; without it, the unique
-    /// output matching the stream's logical size wins. Returns None (identity)
-    /// when geometry is unknown, ambiguous, or the whole desktop is captured.
+    /// Origin comes from the portal stream `position`; a position no current
+    /// output starts at is stale (layout changed since the session opened) and
+    /// falls back to the unique output matching the stream's logical size.
+    /// Returns None (identity) when geometry is unknown, ambiguous, or the
+    /// whole desktop is captured.
     pub fn resolve(position: Option<(i32, i32)>, stream_logical: (i32, i32), outputs: &[crate::output_layout::Output]) -> Option<Self> {
         if stream_logical.0 <= 0 || stream_logical.1 <= 0 || outputs.is_empty() { return None; }
         let min_x = outputs.iter().map(|o| o.0).min()?;
@@ -205,7 +207,11 @@ impl AbsoluteMapping {
         let desktop = (i64::from(max_x - min_x), i64::from(max_y - min_y));
         if desktop.0 <= 0 || desktop.1 <= 0 { return None; }
         let stream = (i64::from(stream_logical.0), i64::from(stream_logical.1));
-        let origin = match position {
+        // A portal-reported position no current output starts at is stale: the
+        // layout changed after the portal session opened (e.g. the other
+        // monitor was disabled and this one moved). Fall back to size matching.
+        let positioned = position.filter(|origin| outputs.iter().any(|o| (o.0, o.1) == *origin));
+        let origin = match positioned {
             Some(origin) => origin,
             None => {
                 let matches: Vec<_> = outputs.iter().filter(|o| (o.2, o.3) == stream_logical).collect();
@@ -272,6 +278,18 @@ mod mapping_tests {
         // Same-size screens are ambiguous: fail soft to identity.
         let twin = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
         assert_eq!(AbsoluteMapping::resolve(None, (1920, 1080), &twin), None);
+    }
+
+    #[test]
+    fn stale_position_falls_back_to_size_matching() {
+        // The captured screen sat at (1920, 0) when the portal session opened;
+        // the other monitor was then disabled and it moved to (0, 0).
+        let outputs = [(0, 0, 2560, 1440)];
+        assert_eq!(AbsoluteMapping::resolve(Some((1920, 0)), (2560, 1440), &outputs), None);
+        // Two screens remain but none starts at the reported position.
+        let moved = [(0, 0, 2048, 1152), (2048, 36, 1920, 1080)];
+        let mapping = AbsoluteMapping::resolve(Some((0, 1152)), (1920, 1080), &moved).unwrap();
+        assert_eq!(mapping, AbsoluteMapping::resolve(Some((2048, 36)), (1920, 1080), &moved).unwrap());
     }
 
     #[test]

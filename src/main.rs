@@ -417,7 +417,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         } else { capture.clone() };
                         // Independent file/terminal peers must not detach the
                         // current desktop's authorized Portal input session.
-                        if desktop { input.bind_portal(session_capture.portal.clone()); input.set_absolute_mapping(session_capture.absolute_mapping); }
+                        if desktop {
+                            input.bind_portal(session_capture.portal.clone());
+                            // The output layout may have changed since capture setup
+                            // (monitor disabled/enabled); never reuse a stale mapping.
+                            input.set_absolute_mapping(session_capture.fresh_absolute_mapping());
+                        }
                         match WebRtcSession::new(session_capture, input.clone(), signaling_client.clone(), desktop, transport).await {
                             Ok(sess) => match sess.handle_offer(&soac).await {
                                 Ok(answer_sdp) => {

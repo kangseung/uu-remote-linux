@@ -225,7 +225,10 @@ started a second full host server instead, so check that a subcommand exists in 
   capture would offset clicks. `c_engine/output_layout.c` enumerates logical outputs via xdg-output; the portal
   stream `position` (KDE provides it) or a unique logical-size match feeds `input_mapping::AbsoluteMapping`
   (`capture.rs` → `InputInjector::set_absolute_mapping`, cleared on portal unbind). Identity when geometry is
-  unknown/ambiguous or the whole desktop is captured; logical (not pixel) coordinates everywhere.
+  unknown/ambiguous or the whole desktop is captured; logical (not pixel) coordinates everywhere. The mapping is
+  re-resolved on every desktop offer (`ScreenCapture::fresh_absolute_mapping`), never trusted from capture setup:
+  a monitor can be disabled while the portal session stays alive, and a portal-reported `position` no current
+  output starts at is stale and falls back to size matching.
 - Portal session kinds: `uu_portal_open_persist` (RemoteDesktop: input + clipboard consent) and
   `uu_portal_open_screencast` (ScreenCast-only: capture consent with per-screen picker on KDE, no SelectDevices,
   no portal clipboard; input/clipboard FFI report unsupported). `src/capture.rs` picks ScreenCast when

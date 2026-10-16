@@ -41,6 +41,17 @@ unsafe fn x11_close() {}
 #[cfg(not(target_os = "linux"))]
 unsafe fn x11_display_name() -> *const libc::c_char { b":0\0".as_ptr().cast() }
 
+/// Resolve the captured stream's window inside the desktop bounding box from
+/// the live portal session geometry and a fresh output-layout enumeration.
+pub fn resolve_absolute_mapping(session: &crate::portal::PortalSession) -> Option<crate::input_mapping::AbsoluteMapping> {
+    let (position,logical)=session.stream_geometry();
+    let outputs=crate::output_layout::outputs();
+    let mapping=crate::input_mapping::AbsoluteMapping::resolve(position,logical,outputs.as_deref().unwrap_or(&[]));
+    log::info!("Desktop absolute pointer mapping: active={} position_known={} outputs={}",
+        mapping.is_some(),position.is_some(),outputs.as_deref().unwrap_or(&[]).len());
+    mapping
+}
+
 pub struct ScreenCapture {
     pub backend: crate::desktop_backend::DesktopBackend,
     pub init_error: Option<String>,
@@ -73,14 +84,7 @@ impl ScreenCapture {
             let (width,height)=(session.width,session.height);
             // uinput's absolute tablet spans the whole desktop box; a single captured
             // screen needs its own window into that box. Fail-soft: identity.
-            let absolute_mapping=uinput_accessible.then(|| {
-                let (position,logical)=session.stream_geometry();
-                let outputs=crate::output_layout::outputs();
-                let mapping=crate::input_mapping::AbsoluteMapping::resolve(position,logical,outputs.as_deref().unwrap_or(&[]));
-                log::info!("Desktop absolute pointer mapping: active={} position_known={} outputs={}",
-                    mapping.is_some(),position.is_some(),outputs.as_deref().unwrap_or(&[]).len());
-                mapping
-            }).flatten();
+            let absolute_mapping=uinput_accessible.then(|| resolve_absolute_mapping(&session)).flatten();
             return Ok(Self { backend,init_error:None,portal:Some(session),kms:None,display:"wayland:portal".into(),width,height,
                 absolute_mapping,
                 buffer:Mutex::new(vec![0;(width as usize)*(height as usize)*4]) });
@@ -128,6 +132,13 @@ impl ScreenCapture {
     pub fn unavailable(error:String)->Self {
         Self { backend:crate::desktop_backend::detect().unwrap_or(crate::desktop_backend::DesktopBackend::X11),
             init_error:Some(error), portal:None, kms:None, display:String::new(), absolute_mapping:None, width:0,height:0,buffer:Mutex::new(Vec::new()) }
+    }
+
+    /// Re-resolve the pointer mapping for a new desktop connection. The output
+    /// layout can change (a monitor disabled) while this capture and its portal
+    /// session stay alive, so the value resolved at setup must not be trusted.
+    pub fn fresh_absolute_mapping(&self) -> Option<crate::input_mapping::AbsoluteMapping> {
+        self.portal.as_deref().and_then(resolve_absolute_mapping)
     }
 
     /// 截取一帧 BGRA 图像
