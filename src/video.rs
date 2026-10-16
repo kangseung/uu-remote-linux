@@ -200,6 +200,31 @@ fn rate_args(settings: &VideoSettings, encoder: Encoder) -> (String, String) {
     (format!("{max_kbps}k"), format!("{}k", buffer_kbits(max_kbps, encoder)))
 }
 
+/// ffmpeg 5.1 replaced `-vsync` with `-fps_mode` (4.4 on jammy/Mint 21 rejects it,
+/// killing the encoder at spawn and leaving the viewer stuck at "传输画面"), while
+/// ffmpeg 7 removed `-vsync`. Probe once per process against the configured ffmpeg
+/// and cache whichever form this build accepts.
+fn fps_mode_args() -> [&'static str; 2] {
+    static ONCE: std::sync::OnceLock<[&'static str; 2]> = std::sync::OnceLock::new();
+    *ONCE.get_or_init(|| {
+        let probe = |args: &[&str]| {
+            let mut command = match crate::config::ffmpeg_root() {
+                Some(root) => { let mut c = std::process::Command::new(root.join("bin/ffmpeg")); c.env("LD_LIBRARY_PATH", root.join("lib/x86_64-linux-gnu")); c }
+                None => std::process::Command::new("ffmpeg"),
+            };
+            command.args(["-hide_banner","-loglevel","error","-f","lavfi","-i","nullsrc=s=16x16:d=0.1:r=1"])
+                .args(args).args(["-f","null","-"])
+                .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+                .status().is_ok_and(|status| status.success())
+        };
+        if probe(&["-fps_mode","vfr"]) { ["-fps_mode","vfr"] }
+        else if probe(&["-vsync","passthrough"]) {
+            log::info!("FFmpeg predates 5.1 (-fps_mode unsupported); using -vsync passthrough");
+            ["-vsync","passthrough"]
+        } else { ["-fps_mode","vfr"] } // let the real spawn report the failure
+    })
+}
+
 async fn read_encoder_with(
     size: (u32,u32),display:String,portal:Option<Arc<crate::portal::PortalSession>>,latest:mpsc::Sender<Arc<CompleteFrame>>,encoder:Encoder,sequence:Arc<std::sync::atomic::AtomicU64>,
     mut settings: VideoSettings, #[cfg_attr(not(feature = "inproc-av"), allow(unused_variables))] idr: Arc<AtomicBool>,
@@ -276,7 +301,7 @@ async fn read_encoder_with(
     // timebase drops those same-slot frames instead of encoding a burst.
     let time_base = format!("1/{fps}");
     if wayland { command.stdin(std::process::Stdio::piped()); }
-    let mut child=command.args(["-fps_mode","vfr","-enc_time_base",&time_base,"-f","h264","pipe:1"])
+    let mut child=command.args(fps_mode_args()).args(["-enc_time_base",&time_base,"-f","h264","pipe:1"])
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())

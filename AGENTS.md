@@ -202,7 +202,9 @@ started a second full host server instead, so check that a subcommand exists in 
 ## 8. Known pitfalls
 
 - webrtc-rs `Sample.duration` sets the gap to the **next** frame. FFmpeg 6.1 rejects `-r` together with
-  `-fps_mode vfr`.
+  `-fps_mode vfr`. `-fps_mode` needs ffmpeg ≥ 5.1 and `-vsync` is gone in ffmpeg 7, so the desktop encoder
+  probes once per process (`fps_mode_args` in `src/video.rs`) and falls back to `-vsync passthrough` on 4.4
+  (jammy/Mint 21); without the fallback the encoder dies at spawn and the viewer hangs at "传输画面".
 - All-intra 60 fps saturates Wi-Fi; keep GOP ≈ 0.5 s. A bitrate cap alone does not change quality on a static
   desktop, so presets also change the CQ level.
 - X11 capture on a GPU saturated by CUDA work starves; prefer the iGPU for the desktop when available.
