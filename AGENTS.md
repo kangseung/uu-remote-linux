@@ -236,6 +236,10 @@ started a second full host server instead, so check that a subcommand exists in 
   text clipboard falls back to the wl-clipboard bridge (`clipboard::start_wayland`) for ScreenCast sessions.
   `InputInjector` opens uinput eagerly at startup and retries lazily in `bind_portal`, because the systemd
   user service can start before the Wayland socket exists and initially detect X11 (which skips uinput).
+  When no desktop viewer remains — `released`/`left` signaling, or the 5 s housekeeping sweep in the
+  `src/main.rs` event loop reaping Closed/Failed peers (killed app, lost network) — `release_idle_desktop_capture`
+  closes the portal capture session so KDE/GNOME clears the screen-sharing indicator and its do-not-disturb;
+  the next desktop offer reopens it silently through the persisted restore token.
 
 ## 9. Debugging checklist
 

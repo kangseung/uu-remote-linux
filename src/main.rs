@@ -54,6 +54,18 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use webrtc::WebRtcSession;
 
+/// Close the desktop capture once no desktop viewer remains. A portal session
+/// kept open after the last viewer leaves makes KDE/GNOME keep the
+/// screen-sharing indicator (and its do-not-disturb) on indefinitely; the next
+/// desktop offer reopens it through the persisted restore token, without a
+/// consent dialog. X11/Wayland-native captures hold no session: no-op there.
+fn release_idle_desktop_capture(sessions: &HashMap<String, WebRtcSession>, capture: &mut Arc<ScreenCapture>, input: &Arc<InputInjector>) {
+    if capture.portal.is_none() || sessions.values().any(|session| session.desktop) { return; }
+    log::info!("Last desktop viewer disconnected; closing the portal capture session");
+    input.release_held(); input.bind_portal(None); input.set_absolute_mapping(None);
+    *capture = Arc::new(ScreenCapture::unavailable("No desktop viewer connected".into()));
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -338,7 +350,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // 事件处理主循环
-        while let Some(evt) = rx_event.recv().await {
+        // A viewer whose app was killed or whose network vanished leaves no
+        // signaling release; reap its Closed/Failed peer on this timer so the
+        // desktop share (portal indicator, do-not-disturb) always ends.
+        let mut housekeeping = tokio::time::interval(std::time::Duration::from_secs(5));
+        housekeeping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            let evt = tokio::select! {
+                received = rx_event.recv() => match received { Some(evt) => evt, None => break },
+                _ = housekeeping.tick() => {
+                    let mut sessions = webrtc_sessions.lock().await;
+                    let dead: Vec<String> = sessions.iter().filter(|(_, session)| matches!(session.pc.connection_state(),
+                        ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Closed |
+                        ::webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState::Failed)).map(|(k, _)| k.clone()).collect();
+                    for k in dead {
+                        if let Some(old) = sessions.remove(&k) {
+                            log::info!("Reaping dead peer connection: desktop={}", old.desktop);
+                            let _ = old.pc.close().await;
+                        }
+                    }
+                    release_idle_desktop_capture(&sessions, &mut capture, &input);
+                    continue;
+                }
+            };
             match evt {
                 SignalingEvent::Connected => {
                     log::info!("Signaling handshake established.");
@@ -468,6 +502,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Err(e) = old.pc.close().await { log::warn!("Close released peer failed: {}", e); }
                         }
                     }
+                    release_idle_desktop_capture(&sessions, &mut capture, &input);
                 }
                 SignalingEvent::Disconnected => {
                     capture_types.clear();

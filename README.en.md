@@ -103,6 +103,7 @@ All verified on real hardware (see the machines listed at the top); details live
 - Lock screen: with `UU_STREAM_LOCK_SCREEN=1` the lock screen keeps streaming and the password can be typed directly into it; the capture session is rebuilt on every lock→unlock edge (fixes the black screen after unlock)
 - Displays turned off by power saving (DPMS) are woken via `SimulateUserActivity` (fixes all-black streams while the monitor is off)
 - Pointer offset fix when capturing a single screen of a multi-monitor setup (xdg-output layout mapping); the mapping is re-resolved against the live layout on every connection, and a stale portal-reported position that no current output starts at falls back to size matching (fixes pointer drift after disabling a monitor)
+- Killing the phone app (or losing its network) now ends the desktop share: the portal capture session closes, so KDE's screen-sharing indicator (red dot) and its do-not-disturb turn back off instead of staying on forever; the next connection reopens silently through the persisted restore token
 
 **Cinnamon / X11 (Mint 21)**
 - Fixed a sporadic segfault on the first QR login: `XInitThreads()` now runs in a C library constructor (before `main`), so GTK and worker threads never share an unlocked libX11
