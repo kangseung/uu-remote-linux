@@ -136,11 +136,13 @@ Download `uuremote-server_*_amd64.deb` from [Releases](../../releases), then:
 ```sh
 sudo apt install ./uuremote-server_*_amd64.deb
 uuremote-server login   # run once inside the desktop session, scan the QR with the mobile app
+systemctl --user enable --now uuremote-server   # start now without logging out (already globally enabled for autostart)
 ```
 
 The package installs all runtime dependencies, the `/dev/uinput` udev rule and a systemd user unit:
-the service starts automatically at every login and restarts on crashes — nothing else to do.
-Upgrades are just installing the newer deb. Building from source is described below.
+the service starts automatically at every login and restarts on crashes. Run the command above if you
+want it online without logging out first. Upgrades are just installing the newer deb. Building from
+source is described below.
 
 ### 1. Dependencies (Ubuntu / Debian)
 

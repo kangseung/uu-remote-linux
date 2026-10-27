@@ -128,10 +128,12 @@ Wayland 下的限制：只支持单屏、固定分辨率；Hyprland 原生后端
 ```sh
 sudo apt install ./uuremote-server_*_amd64.deb
 uuremote-server login   # 在桌面会话里运行一次，用手机 App 扫码登录
+systemctl --user enable --now uuremote-server   # 不想重新登录桌面时立即上线（deb 已全局 enable，下次登录仍会自动启动）
 ```
 
 软件包会装齐运行依赖、`/dev/uinput` 的 udev 规则和 systemd 用户服务：登录桌面后服务自动启动、
-崩溃自动重启，除此不再需要手动步骤。升级时直接安装新版 deb 即可。从源码编译安装见下文。
+崩溃自动重启。安装后不想重新登录桌面的话，执行上面的 `systemctl --user enable --now` 立即拉起；
+升级时直接安装新版 deb 即可。从源码编译安装见下文。
 
 ### 1. 依赖（Ubuntu / Debian）
 
