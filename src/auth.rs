@@ -25,6 +25,24 @@ impl std::fmt::Display for RoomError {
 
 pub const BASE_URL: &str = "https://api.nrd.nie.163.com";
 
+/// UU client version reported as x-param-vn / x-param-vc / User-Agent. The official Windows
+/// host keeps moving; the viewer greys out newer features and warns "被控端版本较低" once this
+/// falls behind. UU_CLIENT_VERSION overrides it without a rebuild.
+pub const DEFAULT_CLIENT_VERSION: &str = "4.45.0.4318";
+
+/// (x-param-vn, x-param-vc, User-Agent) derived from the reported version; the code is the
+/// last dotted segment and the agent keeps the first three, like the official client.
+fn reported_version() -> (String, String, String) {
+    let version = std::env::var("UU_CLIENT_VERSION").ok().filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string());
+    let code = version.rsplit('.').next()
+        .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(DEFAULT_CLIENT_VERSION.rsplit('.').next().unwrap_or("0"))
+        .to_string();
+    let agent = version.split('.').take(3).collect::<Vec<_>>().join(".");
+    (version, code, format!("UURemote/{agent} (Windows NT 10.0; Win64; x64)"))
+}
+
 /// Account binding and request-signing key. Never committed: loaded at startup from
 /// a private config file or environment variables (see config.example.json).
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -136,8 +154,9 @@ impl UUAuthClient {
 
         let mut param_map = BTreeMap::new();
         param_map.insert("x-param-plat".into(), "1".into());
-        param_map.insert("x-param-vn".into(), "4.42.0.2770".into());
-        param_map.insert("x-param-vc".into(), "2770".into());
+        let (client_version, version_code, user_agent) = reported_version();
+        param_map.insert("x-param-vn".into(), client_version);
+        param_map.insert("x-param-vc".into(), version_code);
         param_map.insert("x-param-pkgn".into(), "com.netease.gameviewer".into());
         param_map.insert("x-param-chn".into(), "gwqd".into());
         param_map.insert("x-param-lang".into(), "zh-CN".into());
@@ -154,10 +173,7 @@ impl UUAuthClient {
         let mut headers = HeaderMap::new();
         headers.insert("Content-Type", HeaderValue::from_static("application/json"));
         headers.insert("Accept", HeaderValue::from_static("application/json"));
-        headers.insert(
-            "User-Agent",
-            HeaderValue::from_static("UURemote/4.42.0 (Windows NT 10.0; Win64; x64)"),
-        );
+        headers.insert("User-Agent", HeaderValue::from_str(&user_agent).unwrap());
         if !self.creds.token.is_empty() {
             if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", self.creds.token)) { headers.insert("Authorization", v); }
             if let Ok(v) = HeaderValue::from_str(&format!("nrd_access_token={}; nrd_csrf_access_token={}", self.creds.token, self.creds.csrf)) {
@@ -217,6 +233,20 @@ fn room_token_lifetime(token: &str, now: u64) -> Option<i64> {
     let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let remaining = claims.get("exp")?.as_i64()?.saturating_sub(i64::try_from(now).ok()?);
     (remaining.unsigned_abs() <= 7 * 24 * 3600).then_some(remaining)
+}
+
+#[cfg(test)]
+mod reported_version_tests {
+    use super::{reported_version, DEFAULT_CLIENT_VERSION};
+    #[test]
+    fn reports_the_baseline_without_an_override() {
+        // The test binary shares the process env; read the baseline the code would report.
+        if std::env::var("UU_CLIENT_VERSION").is_ok() { return; }
+        let (vn, vc, ua) = reported_version();
+        assert_eq!(vn, DEFAULT_CLIENT_VERSION);
+        assert_eq!(vc, "4318");
+        assert_eq!(ua, "UURemote/4.45.0 (Windows NT 10.0; Win64; x64)");
+    }
 }
 
 #[cfg(test)]
