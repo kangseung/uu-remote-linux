@@ -28,7 +28,7 @@ pub const BASE_URL: &str = "https://api.nrd.nie.163.com";
 /// UU client version reported as x-param-vn / x-param-vc / User-Agent. The official Windows
 /// host keeps moving; the viewer greys out newer features and warns "被控端版本较低" once this
 /// falls behind. UU_CLIENT_VERSION overrides it without a rebuild.
-pub const DEFAULT_CLIENT_VERSION: &str = "4.45.0.4318";
+pub const DEFAULT_CLIENT_VERSION: &str = "4.48.4.6020";
 
 /// (x-param-vn, x-param-vc, User-Agent) derived from the reported version; the code is the
 /// last dotted segment and the agent keeps the first three, like the official client.
@@ -244,8 +244,8 @@ mod reported_version_tests {
         if std::env::var("UU_CLIENT_VERSION").is_ok() { return; }
         let (vn, vc, ua) = reported_version();
         assert_eq!(vn, DEFAULT_CLIENT_VERSION);
-        assert_eq!(vc, "4318");
-        assert_eq!(ua, "UURemote/4.45.0 (Windows NT 10.0; Win64; x64)");
+        assert_eq!(vc, "6020");
+        assert_eq!(ua, "UURemote/4.48.4 (Windows NT 10.0; Win64; x64)");
     }
 }
 
