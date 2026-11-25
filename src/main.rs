@@ -1,6 +1,8 @@
+
 //! UU Remote Pure Native Linux Server (Rust Edition)
 //! Zero-Wine, Zero-Python, Single-Binary, 5 Native Tools Integrated
 
+mod client_version;
 mod desktop_backend;
 mod portal;
 mod network_diagnostics;
@@ -255,6 +257,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     virtual_audio::init();
     let _audio_cleanup=virtual_audio::Cleanup;
     log::info!("Starting uu-remote-linux host v{}...", env!("CARGO_PKG_VERSION"));
+    client_version::spawn_refresh();
 
     let mut capture = Arc::new((if desktop_backend::headless() {
         Err("headless mode (UU_DESKTOP_BACKEND=none)".to_owned())

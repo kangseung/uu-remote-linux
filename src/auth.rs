@@ -33,8 +33,7 @@ pub const DEFAULT_CLIENT_VERSION: &str = "4.48.4.6020";
 /// (x-param-vn, x-param-vc, User-Agent) derived from the reported version; the code is the
 /// last dotted segment and the agent keeps the first three, like the official client.
 fn reported_version() -> (String, String, String) {
-    let version = std::env::var("UU_CLIENT_VERSION").ok().filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLIENT_VERSION.to_string());
+    let version = crate::client_version::current();
     let code = version.rsplit('.').next()
         .filter(|c| !c.is_empty() && c.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or(DEFAULT_CLIENT_VERSION.rsplit('.').next().unwrap_or("0"))
